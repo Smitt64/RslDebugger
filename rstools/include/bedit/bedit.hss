@@ -1,0 +1,111 @@
+/*******************************************************************************
+ FILE         :   BEDIT.HSS
+
+ COPYRIGHT    :   R-Style Software Lab, 1998
+
+ DESCRIPTION  :   Literal string declaration for BEDIT library
+
+ PROGRAMMED BY:   Yakov E. Markovitch
+
+ CREATION DATE:   7 Sep 1998
+
+ VERSION INFO :   $Archive: $
+                  $Revision: $
+                  $Date: $
+                  $Author: $
+                  $Modtime: $
+*******************************************************************************/
+
+#ifndef __BEDIT_HSS
+#define __BEDIT_HSS
+
+#ifndef __PLATFORM_H
+    #include <platform.h>
+#endif // PLATFORM.H
+
+extern const char RSL_FAR _BEDIT_STR_CREATOR1[];
+extern const char RSL_FAR _BEDIT_STR_CREATOR2[];
+
+extern const char RSL_FAR * const _BEDIT_STR_MSG[];
+extern const char RSL_FAR * const _BEDIT_STR_CONFMSG[];
+
+extern const char RSL_FAR _BEDIT_STR_BAPPERR[];
+
+#ifdef SQLBUILD
+    extern const char RSL_FAR  _BEDIT_STR_ERRMSGFMT_BTRV[];
+    extern const char RSL_FAR  _BEDIT_STR_ERRMSGFMT_EX_BTRV[];
+
+    extern const char RSL_FAR  _BEDIT_STR_ERRMSGFMT_SQL[];
+    extern const char RSL_FAR  _BEDIT_STR_ERRMSGFMT_EX_SQL[];
+
+    extern const char RSL_FAR _BEDIT_STR_TRNMSG1_BTRV[];
+    extern const char RSL_FAR _BEDIT_STR_TRNMSG1_SQL[];
+#else
+    extern const char RSL_FAR _BEDIT_STR_TRNMSG1[];
+
+    extern const char RSL_FAR  _BEDIT_STR_ERRMSGFMT[];
+    extern const char RSL_FAR  _BEDIT_STR_ERRMSGFMT_EX[];
+#endif
+
+extern const char RSL_FAR _BEDIT_STR_TRNMSG2[];
+extern const char RSL_FAR _BEDIT_STR_TRNMSG3[];
+
+extern const char RSL_FAR _BEDIT_STR_USRBRK[];
+
+extern const char RSL_FAR _MULTISEL_STR_0[];
+extern const char RSL_FAR _MULTISEL_STR_1[];
+extern const char RSL_FAR _MULTISEL_STR_2[];
+extern const char RSL_FAR _MULTISEL_STR_3[];
+extern const char RSL_FAR _MULTISEL_STR_4[];
+extern const char RSL_FAR _MULTISEL_STR_5[];
+extern const char RSL_FAR _MULTISEL_STR_6[];
+extern const char RSL_FAR _MULTISEL_STR_7[];
+extern const char RSL_FAR _MULTISEL_STR_8[];
+extern const char RSL_FAR _MULTISEL_STR_9[];
+extern const char RSL_FAR _MULTISEL_STR_10[];
+extern const char RSL_FAR _MULTISEL_STR_11[];
+extern const char RSL_FAR _MULTISEL_STR_12[];
+extern const char RSL_FAR _MULTISEL_STR_13[];
+extern const char RSL_FAR _MULTISEL_STR_14[];
+extern const char RSL_FAR _MULTISEL_STR_15[];
+
+extern const char RSL_FAR _BEDIT_STR_NOREC[12];
+
+extern const char RSL_FAR _BEDIT_STR_VARMEN[];
+
+extern const char RSL_FAR _BEDIT_CH_FILT[];
+extern const char RSL_FAR _BEDIT_STR_EDIT[];
+
+extern const char RSL_FAR _BSFILTR_STR_STATUS[];
+extern const char RSL_FAR _BSFILTR_STR_TITLE[];
+extern const char RSL_FAR _BSFILTR_STR_FIELD1[];
+extern const char RSL_FAR _BSFILTR_STR_FIELD2[];
+extern const char RSL_FAR _BSFILTR_STR_FIELD3[];
+extern const char RSL_FAR _BSFILTR_STR_INVITE[];
+extern const char RSL_FAR _BSFILTR_STR_NOREC[];
+extern const char RSL_FAR *_BSFILTR_STR_COND1[];
+extern const char RSL_FAR *_BSFILTR_STR_COND2[];
+extern const char RSL_FAR *_BSFILTR_STR_COND3[];
+
+extern const char RSL_FAR _BSSORT_STR_STATUS[];
+extern const char RSL_FAR _BSSORT_STR_TITLE[];
+extern const char RSL_FAR _BSSORT_STR_FIELD1[];
+extern const char RSL_FAR _BSSORT_STR_FIELD2[];
+extern const char RSL_FAR _BSSORT_STR_ASC[];
+extern const char RSL_FAR _BSSORT_STR_DESC[];
+
+extern const char RSL_FAR _BSCONTEXT_MENU1[];
+extern const char RSL_FAR _BSCONTEXT_MENU2[];
+extern const char RSL_FAR _BSCONTEXT_MENU3[];
+extern const char RSL_FAR _BSCONTEXT_MENU4[];
+extern const char RSL_FAR _BSCONTEXT_MENU5[];
+extern const char RSL_FAR _BSCONTEXT_MENU6[];
+extern const char RSL_FAR _BSCONTEXT_MENU61[];
+extern const char RSL_FAR _BSCONTEXT_MENU7[];
+
+extern const char RSL_FAR _BSUSER_SR_HEAD[];
+extern const char RSL_FAR _BSUSER_SR_STATUS[];
+
+#endif // __BEDIT_HSS
+
+/* <-- EOF --> */

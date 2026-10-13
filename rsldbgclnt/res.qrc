@@ -1,0 +1,10 @@
+<RCC>
+    <qresource prefix="/">
+        <file>img/tree/stylesheet-branch-end.svg</file>
+        <file>img/tree/stylesheet-branch-more.svg</file>
+        <file>img/tree/stylesheet-vline.svg</file>
+        <file>img/tree/treebranch.qss</file>
+        <file>img/tree/stylesheet-branch-closed.svg</file>
+        <file>img/tree/stylesheet-branch-open.svg</file>
+    </qresource>
+</RCC>

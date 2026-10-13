@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="DefaultHighlighterStyle">codeeditor/Default.json</file>
+        <file>highlighter/cpp_rsdefines.txt</file>
+        <file>highlighter/cpp_rsenums.txt</file>
+        <file>highlighter/cpp_rstypes.txt</file>
+        <file>highlighter/rsl_keywords.txt</file>
+        <file>highlighter/sql_keys.txt</file>
+        <file alias="VisualStudioDark">syntaxhighlighter/Visual Studio (Dark).json</file>
+        <file alias="VisualStudioLight">syntaxhighlighter/Visual Studio (Light).json</file>
+    </qresource>
+</RCC>

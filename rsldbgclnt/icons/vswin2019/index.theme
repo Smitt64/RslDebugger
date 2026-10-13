@@ -1,0 +1,19 @@
+[Icon Theme]
+Name=VS Win 2019
+Comment=Visual Studio 2019 image library (SVG)
+
+Directories=actions,objects
+
+[actions]
+Size=16
+Context=Actions
+Type=Scalable
+MinSize=8
+MaxSize=256
+
+[objects]
+Size=16
+Context=Objects
+Type=Scalable
+MinSize=8
+MaxSize=256

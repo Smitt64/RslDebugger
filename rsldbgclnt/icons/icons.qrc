@@ -1,0 +1,24 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file>vswin2019/index.theme</file>
+        <file>vswin2019/actions/Breakpoint.svg</file>
+        <file>vswin2019/actions/CurrentLine.svg</file>
+        <file>vswin2019/actions/Run.svg</file>
+        <file>vswin2019/actions/Stop.svg</file>
+        <file>vswin2019/actions/StepInto.svg</file>
+        <file>vswin2019/actions/StepOver.svg</file>
+        <file>vswin2019/actions/StepOut.svg</file>
+        <file>vswin2019/actions/Resume.svg</file>
+        <file>vswin2019/actions/ResumeExec.svg</file>
+        <file>vswin2019/actions/FunctionEnter.svg</file>
+        <file>vswin2019/actions/ViewVarValue.svg</file>
+        <file>vswin2019/actions/Find.svg</file>
+        <file>vswin2019/actions/Copy.svg</file>
+        <file>vswin2019/actions/Search.svg</file>
+        <file>vswin2019/objects/Class.svg</file>
+        <file>vswin2019/objects/Array.svg</file>
+        <file>vswin2019/objects/Variable.svg</file>
+        <file>vswin2019/objects/Childs.svg</file>
+        <file>vswin2019/objects/Undefined.svg</file>
+    </qresource>
+</RCC>

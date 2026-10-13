@@ -1,0 +1,1 @@
+2026-10-10 13:46:10.363 DBG rsldbg: ~MainWindow()

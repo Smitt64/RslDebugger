@@ -1,0 +1,63 @@
+/*******************************************************************************
+ FILE         :   BFBT.HSS
+
+ COPYRIGHT    :   R-Style Software Lab, 1998
+
+ DESCRIPTION  :   Literal string declaration for BF BTrieve library
+
+ PROGRAMMED BY:   Yakov E. Markovitch
+
+ CREATION DATE:   7 Sep 1998
+
+ VERSION INFO :   $Archive: $
+                  $Revision: $
+                  $Date: $
+                  $Author: $
+                  $Modtime: $
+*******************************************************************************/
+
+#ifndef __BFBT_HSS
+#define __BFBT_HSS
+
+#include <platform.h>
+
+
+// -----------------------------------------------------------------------------
+// Сообщение об ошибках СУБД
+typedef struct tagBtExtErr
+      {
+       int          code;         // Код ошибки
+
+       const char  *mes,          // Описание ошибки (RUS)
+                   *mesSql,       // Описание SQL-ошибки (RUS)
+                   *mesEng;       // Описание ошибки (ENG)
+      } TBtExtErr;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern TBtExtErr _BFBT_STR_EXTERR[];
+
+extern const char RSL_FAR * _BFBT_STR_BMSGEXTENDED_R[];
+extern const char RSL_FAR * _BFBT_STR_BMSGEXTENDED_E[];
+extern const char RSL_FAR _BFBT_STR_BMSGUNKNOWN_R[];
+extern const char RSL_FAR _BFBT_STR_BMSGUNKNOWN_E[];
+extern const char RSL_FAR * _BFBT_STR_MDBMSG_R[];
+extern const char RSL_FAR * _BFBT_STR_MDBMSG_E[];
+
+extern const char RSL_FAR  _BTDICT_STR_FILE_DESC[];
+extern const char RSL_FAR  _BTDICT_STR_FIELD_DESC[];
+extern const char RSL_FAR  _BTDICT_STR_KEY_DESC[];
+
+extern const char RSL_FAR *_BTDICT_STR_FILE_FLD_DESC[];
+extern const char RSL_FAR *_BTDICT_STR_FIELD_FLD_DESC[];
+extern const char RSL_FAR *_BTDICT_STR_KEY_FLD_DESC[];
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BFBT_HSS */
+
+/* <-- EOF --> */
