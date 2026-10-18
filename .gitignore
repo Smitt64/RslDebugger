@@ -69,3 +69,6 @@ rsldbgclnt/debug/
 dumps/
 
 *.pdb
+
+loki/debug/
+rslexecutor/debug/
