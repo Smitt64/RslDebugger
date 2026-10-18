@@ -61,3 +61,11 @@ compile_commands.json
 rsledit/debug/
 
 rslrun/debug/
+
+rsldbg/debug/
+
+rsldbgclnt/debug/
+
+dumps/
+
+*.pdb
