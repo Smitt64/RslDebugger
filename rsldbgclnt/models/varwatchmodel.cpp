@@ -1,10 +1,8 @@
 #include "varwatchmodel.h"
 #include "mainwindow.h"
 #include <QDebug>
-#include "dbgserverproto.h"
 #include <QStyle>
 #include <QApplication>
-#include <QTextCodec>
 
 class TreeItem
 {
@@ -13,7 +11,6 @@ public:
         pModel(model),
         m_parentItem(parentItem)
     {
-        //memset(&m_VarInfo, 0, sizeof(DBG_VARIABLEDATA));
         m_VarInfo.depth = 0;
     }
 
@@ -39,23 +36,12 @@ public:
 
     QVariant data(int column, int role) const
     {
-        TreeItem *pThis = const_cast<TreeItem*>(this);
         if (role == Qt::DisplayRole)
         {
             if (column == VarWatchModel::ColumnName)
-            {
-                if (!VarNameCache.isValid())
-                    pThis->VarNameCache = m_VarInfo.str_name;
-
-                return VarNameCache;
-            }
+                return m_VarInfo.name;
             else if (column == VarWatchModel::ColumnType)
-            {
-                if (!VarTypeCache.isValid())
-                    pThis->VarTypeCache = m_VarInfo.str_type;
-
-                return VarTypeCache;
-            }
+                return m_VarInfo.type;
             else if (column == VarWatchModel::ColumnValue)
                 return VarValueCache;
         }
@@ -63,11 +49,11 @@ public:
         {
             if (column == VarWatchModel::ColumnName)
             {
-                if (m_VarInfo.is_object)
+                if (m_VarInfo.isObject)
                 {
-                    if (!m_VarInfo.isFakeChildrensItem)
+                    if (!m_VarInfo.isFakeChildren)
                     {
-                        if (!qstrcmp(m_VarInfo.str_type, "TArray"))
+                        if (m_VarInfo.type == QLatin1String("TArray"))
                             return QIcon::fromTheme("Array");
 
                         return QIcon::fromTheme("Class");
@@ -77,7 +63,7 @@ public:
                 }
                 else
                 {
-                    if (!qstrcmp(m_VarInfo.str_type, "UNDEFINED"))
+                    if (m_VarInfo.type == QLatin1String("UNDEFINED"))
                         return QIcon::fromTheme("Undefined");
 
                     return QIcon::fromTheme("Variable");
@@ -91,7 +77,7 @@ public:
         else if (role == VarWatchModel::RealHasChild)
             return !m_childItems.empty();
         else if (role == VarWatchModel::ShowWatchButtonRole)
-            return !VarTypeCache.toString().compare("STRING", Qt::CaseInsensitive) && !m_VarInfo.isFakeChildrensItem;
+            return !m_VarInfo.type.compare("STRING", Qt::CaseInsensitive) && !m_VarInfo.isFakeChildren;
         else if (role == VarWatchModel::ValueRole)
             return QVariant::fromValue<qint64>(m_VarInfo.val);
         else if (role == VarWatchModel::ValueInfoRole)
@@ -121,12 +107,12 @@ public:
         return m_parentItem;
     }
 
-    DBG_VARIABLEDATA &var()
+    VarWatchData &var()
     {
         return m_VarInfo;
     }
 
-    const DBG_VARIABLEDATA &var() const
+    const VarWatchData &var() const
     {
         return m_VarInfo;
     }
@@ -142,9 +128,9 @@ private:
     //QVariantList m_itemData;
     TreeItem *m_parentItem;
 
-    QVariant VarNameCache, VarValueCache, VarTypeCache;
+    QVariant VarValueCache;
 
-    DBG_VARIABLEDATA m_VarInfo;
+    VarWatchData m_VarInfo;
 };
 
 //-------------------------------------------------------------
@@ -153,7 +139,6 @@ VarWatchModel::VarWatchModel(QObject *parent)
     : QAbstractItemModel{parent},
     rootItem(std::make_unique<TreeItem>(this))
 {
-    codec = QTextCodec::codecForName("IBM 866");
 }
 
 VarWatchModel::~VarWatchModel()
@@ -173,7 +158,7 @@ void VarWatchModel::WalkExpandedItems(TreeItem *item, QModelIndexList &lst)
 {
     for (int i = 0; i < item->childCount(); i++)
     {
-        if (item->child(i)->var().is_expanded)
+        if (item->child(i)->var().isExpanded)
         {
             TreeItem *parentItem = item->child(i);//item->parentItem();
             QModelIndex index = createIndex(parentItem->row(), 0, parentItem);
@@ -208,12 +193,11 @@ void VarWatchModel::finishResetVarables()
         emit expand(list[i]);
 }
 
-void VarWatchModel::append(Qt::HANDLE var, const QString &val)
+void VarWatchModel::append(const VarWatchData &var, const QString &val)
 {
-    DBG_VARIABLEDATA *curvar = (DBG_VARIABLEDATA*)var;
-    const DBG_VARIABLEDATA &lastvar = m_LastItem.top()->var();
+    const VarWatchData &lastvar = m_LastItem.top()->var();
 
-    if (curvar->depth > lastvar.depth)
+    if (var.depth > lastvar.depth)
     {
         TreeItem *topItem = m_LastItem.top();
         //TreeItem *parentItem = topItem->parentItem() ? topItem->parentItem() : rootItem.get();
@@ -221,19 +205,19 @@ void VarWatchModel::append(Qt::HANDLE var, const QString &val)
         parentItem->appendChild(std::make_unique<TreeItem>(this, parentItem));
 
         TreeItem *item = parentItem->lastChild();
-        item->var() = *curvar;
+        item->var() = var;
         item->setValue(val);
 
         m_LastItem.push(item);
     }
-    else if (curvar->depth == lastvar.depth)
+    else if (var.depth == lastvar.depth)
     {
         TreeItem *topItem = m_LastItem.top();
         TreeItem *parentItem = topItem->parentItem() ? topItem->parentItem() : rootItem.get();
         parentItem->appendChild(std::make_unique<TreeItem>(this, parentItem));
 
         TreeItem *item = parentItem->lastChild();
-        item->var() = *curvar;
+        item->var() = var;
         item->setValue(val);
 
         m_LastItem.pop();
@@ -302,8 +286,17 @@ Qt::ItemFlags VarWatchModel::flags(const QModelIndex &index) const
 
 bool VarWatchModel::hasChildren(const QModelIndex &parent) const
 {
-    TreeItem *parentItem = parent.isValid() ? static_cast<TreeItem*>(parent.internalPointer()) : rootItem.get();
-    return parentItem->var().is_object;
+    // QTreeViewPrivate::layout() опрашивает строки только для индексов,
+    // у которых hasChildren() == true (см. qtreeview.cpp:3319). Для КОРНЯ
+    // раньше это случайно работало: неинициализированный DBG_VARIABLEDATA
+    // в debug-сборке заполнен 0xCD, и is_object корня был "true". После
+    // перехода на VarWatchData с инициализаторами корень стал честным
+    // false -> дерево перестало показывать строки. Отвечаем по факту.
+    if (!parent.isValid())
+        return rootItem->childCount() > 0;
+
+    TreeItem *parentItem = static_cast<TreeItem*>(parent.internalPointer());
+    return parentItem->var().isObject;
 }
 
 QVariant VarWatchModel::headerData(int section, Qt::Orientation orientation, int role) const

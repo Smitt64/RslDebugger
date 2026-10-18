@@ -1,8 +1,6 @@
 #include "callstackmodel.h"
-#include <dbgserverproto.h>
 #include <QFileInfo>
 #include <QIcon>
-#include <QTextCodec>
 
 CallStackModel::CallStackModel(QObject *parent)
     : QAbstractTableModel{parent}
@@ -62,28 +60,14 @@ QVariant CallStackModel::data(const QModelIndex &index, int role) const
     return QVariant();
 }
 
-void CallStackModel::append(Qt::HANDLE stack)
+void CallStackModel::append(const StackItem &item)
 {
-    QTextCodec *oem866 = QTextCodec::codecForName("IBM 866");
-    QTextCodec *oem1251 = QTextCodec::codecForName("Windows-1251");
-
     beginInsertRows(QModelIndex(), m_Items.size(), m_Items.size());
 
-    DBG_UPDATSTACK *upd = (DBG_UPDATSTACK*)stack;
+    StackItem row = item;
+    row.file = QFileInfo(row.fullfilename).fileName();
 
-    StackItem item;
-    item.fullfilename = oem866->toUnicode(upd->fullfilename);
-    item.func = oem866->toUnicode(upd->func);
-    item.fnamespace = oem1251->toUnicode(upd->fnamespace);
-
-    item.len = upd->len;
-    item.line = upd->line;
-    item.offs = upd->line;
-
-    QFileInfo fi(item.fullfilename);
-    item.file = fi.fileName();
-
-    m_Items.append(item);
+    m_Items.append(row);
     endInsertRows();
 }
 

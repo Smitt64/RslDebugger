@@ -33,7 +33,7 @@ public:
     virtual QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const Q_DECL_OVERRIDE;
     virtual QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const Q_DECL_OVERRIDE;
 
-    void append(Qt::HANDLE stack);
+    void append(const StackItem &item);
 
     QString file(const QModelIndex &index) const;
     QString filename(const QModelIndex &index) const;

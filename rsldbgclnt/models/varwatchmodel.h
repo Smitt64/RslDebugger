@@ -4,9 +4,29 @@
 #include <QAbstractItemModel>
 #include <QObject>
 #include <QStack>
+#include <QString>
+
+// Данные одной переменной (раньше - проводная структура DBG_VARIABLEDATA
+// из протокола; теперь протокол JSON, а это просто внутренний POD модели).
+typedef struct
+{
+    QString name, type, proc;
+    int index = 0;
+    int depth = 1;
+    bool isObject = false;
+    bool isExpanded = false;
+    bool isLvalue = false;
+    bool isFakeChildren = false;
+
+    qint64 val = 0;        // RSLVALUE
+    qint64 exp = 0;        // RSLEXPCTX
+    qint64 st = 0;         // RSLSTACK
+    qint64 procHandle = 0; // RSLPROC
+    qint64 info = 0;       // RSLVINFO
+    qint64 mod = 0;        // RSLMODULE
+} VarWatchData;
 
 class TreeItem;
-class QTextCodec;
 class VarWatchModel : public QAbstractItemModel
 {
     Q_OBJECT
@@ -35,7 +55,7 @@ public:
     virtual ~VarWatchModel();
 
     void clear();
-    void append(Qt::HANDLE var, const QString &val);
+    void append(const VarWatchData &var, const QString &val);
 
     virtual QVariant data(const QModelIndex &index, int role) const Q_DECL_OVERRIDE;
     virtual int columnCount(const QModelIndex &parent = QModelIndex()) const Q_DECL_OVERRIDE;
@@ -56,7 +76,6 @@ signals:
     void expand(const QModelIndex &index);
 
 private:
-    QTextCodec *codec;
     void WalkExpandedItems(TreeItem *item, QModelIndexList &lst);
     std::unique_ptr<TreeItem> rootItem;
 

@@ -57,24 +57,17 @@ int DbgServerBase::port()
     return m_Port;
 }
 
-void DbgServerBase::write(DBGHEADER *hdr, void *data, int len, const QByteArray &adddata)
+void DbgServerBase::write(qint16 action, const QByteArray &data)
 {
+    DBGHEADER hdr;
+    // NB: размер вычисляем выражением, а не запоминаем в hdr.size заранее:
+    // DbgMakeHeader сперва обнуляет структуру memset'ом (раньше параметр
+    // передавался по ссылке и алиасинг с hdr.size давал size == 0 на проводе).
+    DbgMakeHeader(&hdr, int(sizeof(DBGHEADER)) + data.size(), action);
+
     QByteArray tmp;
-    QDataStream stream(&tmp, QIODevice::ReadWrite);
-
-    stream.writeRawData((char*)hdr, sizeof(DBGHEADER));
-
-    if (data)
-        stream.writeRawData((char*)data, len);
-
-    if(!adddata.isEmpty())
-        stream.writeRawData(adddata.data(), adddata.size());
-
-    DBGHEADER tmphdr;
-    memcpy(&tmphdr, hdr, sizeof(DBGHEADER));
-
-    tmphdr.size = tmp.size();
-    memcpy(tmp.data(), &tmphdr, sizeof(DBGHEADER));
+    tmp.append((char*)&hdr, sizeof(DBGHEADER));
+    tmp.append(data);
 
     // Сокет неблокирующий: send может отослать часть данных или
     // вернуть WSAEWOULDBLOCK - досылаем в цикле.
@@ -90,20 +83,6 @@ void DbgServerBase::write(DBGHEADER *hdr, void *data, int len, const QByteArray 
         else
             break;
     }
-}
-
-void DbgServerBase::write(DBGHEADER *hdr, const QByteArray &adddata)
-{
-    write(hdr, nullptr, 0, adddata);
-}
-
-void DbgServerBase::write(qint16 action, const QByteArray &data)
-{
-    DBGHEADER hdr;
-    hdr.size = sizeof(DBGHEADER) + data.size();
-    DbgMakeHeader(&hdr, hdr.size, action);
-
-    write(&hdr, data);
 }
 
 void DbgServerBase::run()
@@ -233,8 +212,15 @@ void DbgServerBase::run()
     ioctlsocket(ClientSocket, FIONBIO, &nonBlock);
 
     DBGHEADER handshake;
-    DbgMakeHeader(&handshake, 0, DBG_REQUEST_HANDSHAKE);
-    send(ClientSocket, (char*)&handshake, sizeof(DBGHEADER), 0);
+    DbgMakeHeader(&handshake, sizeof(DBGHEADER) + sizeof(DBG_HANDSHAKE), DBG_REQUEST_HANDSHAKE);
+
+    DBG_HANDSHAKE hs;
+    hs.version = RSLDBG_PROTOCOL_VERSION;
+
+    QByteArray packet;
+    packet.append((char*)&handshake, sizeof(DBGHEADER));
+    packet.append((char*)&hs, sizeof(DBG_HANDSHAKE));
+    send(ClientSocket, packet.data(), packet.size(), 0);
     emit started();
 
     QByteArray buffer;

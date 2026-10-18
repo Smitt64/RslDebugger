@@ -1,10 +1,15 @@
 #include "breakpointevent.h"
 #include "dbgserverproto.h"
 
-BreakPointEvent::BreakPointEvent(Qt::HANDLE data) :
-    QEvent((QEvent::Type)MSG_BREAKPOINT)
+BreakPointEvent::BreakPointEvent(const TBpData *data) :
+    QEvent((QEvent::Type)MSG_BREAKPOINT),
+    pData(data ? new TBpData(*data) : nullptr)
 {
-    pData = data;
+}
+
+BreakPointEvent::~BreakPointEvent()
+{
+    delete pData;
 }
 
 Qt::HANDLE BreakPointEvent::data()

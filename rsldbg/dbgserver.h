@@ -42,9 +42,6 @@ private:
     QTextCodec *oem866;
     int RslGetModuleLine(Qt::HANDLE module, int offs, int len);
 
-    void process(const QByteArray &data, const qint16 &action);
-    void fillBpData(DBGBPDATA *body, Qt::HANDLE BpData);
-
     QString ReadTextFileContent(const QString &filename, const QString &encode);
     void UpdateText(const int &index);
     void UpdateStack();
@@ -52,7 +49,7 @@ private:
     void UpdateDbgInfo(const int &index);
     void UpdateVariables(const int &index);
     void ShowVariables(const int &index);
-    void ShowVariableValue(const DBG_GETVALUENFO &getvalue);
+    void ShowVariableValue(const qint64 &val, const qint64 &info);
     QString m_LastError;
     RSLSTACK prevStack;
     bool newDbg;

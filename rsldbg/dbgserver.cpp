@@ -19,6 +19,9 @@
 #include <QDataStream>
 #include <QTextCodec>
 #include <QBuffer>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonDocument>
 #include "rsldbg.h"
 
 QString toolProcessStateText(qint16 State);
@@ -154,65 +157,49 @@ bool DbgServer::startApp()
     return hr;
 }
 
-void DbgServer::process(const QByteArray &data, const qint16 &action)
-{
-    /*if (action == DBG_REQUEST_EXECCONTNUE)
-    {
-        DBG_EXECCONTNUE *exec = (DBG_EXECCONTNUE*)data.data();
-        m_curdbg->SetDebugState(false);
-        m_curdbg->do_ExecContinue(exec->trace_log);
-        qDebug() << "DBG_REQUEST_EXECCONTNUE" << exec->trace_log;
-    }*/
-}
-
-void DbgServer::fillBpData(DBGBPDATA *body, Qt::HANDLE BpData)
-{
-    TBpData *data = (TBpData*)BpData;
-    body->bp_type = data->bp_type;
-    body->offs = data->offs;
-    body->len = data->len;
-    body->line = data->line;
-    body->key = data->key;
-    body->mod = reinterpret_cast<qint64>(data->mod);
-    body->stmt = reinterpret_cast<qint64>(data->stmt);
-    qstrcpy(body->modname, data->modname.toLocal8Bit().data());
-}
-
 void DbgServer::sendEventBreakPoint(Qt::HANDLE BpData)
 {
     TBpData *data = (TBpData*)BpData;
 
-    DBGEVENT event;
-    event.event = MSG_BREAKPOINT;
-    event.data.bp_event.stackindex = 0;
+    QJsonObject root;
+    root["event"] = QStringLiteral("breakpoint");
+    root["set"] = (data != nullptr);
 
     if (data)
     {
-        event.data.bp_event.BpSetted = 1;
-        fillBpData(&event.data.bp_event, data);
-    }
-    else
-    {
-        event.data.bp_event.BpSetted = 0;
-        memset(&event.data.bp_event, 0, sizeof(DBGBPDATA));
+        QJsonObject bp;
+        bp["type"] = (int)data->bp_type;
+        bp["offs"] = data->offs;
+        bp["len"] = data->len;
+        bp["line"] = data->line;
+        bp["key"] = QString::number((qint64)data->key);
+        bp["modname"] = data->modname;
+        bp["mod"] = QString::number(reinterpret_cast<qint64>(data->mod));
+        bp["stmt"] = QString::number(reinterpret_cast<qint64>(data->stmt));
+        root["bp"] = bp;
     }
 
-    DBGHEADER handshake;
-    DbgMakeHeader(&handshake, 0, DBG_REQUEST_EVENT);
-    write(&handshake, &event, sizeof(DBGEVENT));
+    write(DBG_REQUEST_EVENT_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
 void DbgServer::UpdateDbgInfo(TBpData *data)
 {
+    // Событие могло дождаться обработки уже после Rsldbg::done() -
+    // CDebug уничтожен, указатель обнулён в done().
+    if (!m_curdbg)
+        return;
+
     m_curdbg->GetRemoteVersion();
     m_curdbg->UpdateDbgInfo();
     m_curdbg->SetDebugState(true);
     m_curdbg->SetCurModule((RSLMODULE)-1);
 
-    int offs, len;
+    int offs = 0, len = 0;
     if (data && data->bp_type == BP_INVISIBLE)
     {
-        m_curdbg->do_ClrBreakPoint (m_curdbg->GetCurStatement (&offs, &len));
+        RSLSTMT stmt = m_curdbg->GetCurStatement(&offs, &len);
+        if (stmt)
+            m_curdbg->do_ClrBreakPoint(stmt);
         m_curdbg->DelBp(data);
     }
 
@@ -242,55 +229,57 @@ void DbgServer::UpdateVariables(const int &index)
 
 void DbgServer::ShowVariables(const int &index)
 {
-    QTextCodec *codec = QTextCodec::codecForName("IBM 866");
+    // Имена/значения приходят из рантайма в ANSI; исторически клиент
+    // декодировал их как Windows-1251 - сохраняем то же отображение.
+    QTextCodec *codec = QTextCodec::codecForName("Windows-1251");
 
     RSLSTACK st = m_curdbg->GetStackAt(index);
     CLocals* pLocals = m_curdbg->GetLocals();
 
-    QByteArray buffer;
-    QBuffer stream(&buffer);
-    stream.open(QIODevice::ReadWrite);
-
-    DBG_LOCALS locals;
-    memset(&locals, 0, sizeof(DBG_LOCALS));
-    stream.write((const char*)&locals, sizeof(DBG_LOCALS));
+    QJsonArray vars;
 
     CLocals::iterator i;
 
     for (i = pLocals->begin (); i != pLocals->end (); ++i)
     {
-        DBG_VARIABLEDATA var;
-        var.index = std::distance(pLocals->begin(), i);
-        (*i)->toDbgVariable(&var);
+        QJsonObject obj;
+        obj["index"] = (int)std::distance(pLocals->begin(), i);
+        obj["name"] = codec->toUnicode((*i)->str_name);
+        obj["type"] = codec->toUnicode((*i)->str_type);
+        obj["proc"] = codec->toUnicode((*i)->str_proc);
+        obj["depth"] = (int)(*i)->depth;
+        obj["object"] = (*i)->is_object;
+        obj["expanded"] = (*i)->is_expanded;
+        obj["lvalue"] = (*i)->is_lvalue;
+        obj["fakeChildren"] = (*i)->isFakeChildrensItem;
+
+        // 64-битные хендлы строками: QJsonValue хранит числа как double,
+        // а double точно представляет целые только до 2^53.
+        obj["val"] = QString::number(reinterpret_cast<qint64>((*i)->val));
+        obj["exp"] = QString::number(reinterpret_cast<qint64>((*i)->exp));
+        obj["st"] = QString::number(reinterpret_cast<qint64>((*i)->st));
+        obj["procHandle"] = QString::number(reinterpret_cast<qint64>((*i)->proc));
+        obj["info"] = QString::number(reinterpret_cast<qint64>((*i)->info));
+        obj["mod"] = QString::number(reinterpret_cast<qint64>((*i)->mod));
 
         if (!(*i)->str_value.isEmpty())
-            var.value_size = (*i)->str_value.size() + 1;
-        else
-            var.value_size = 0;
+            obj["value"] = codec->toUnicode((*i)->str_value);
 
-        stream.write((const char*)&var, sizeof(DBG_VARIABLEDATA));
-
-        if (var.value_size)
-        {
-            char *value = new char[var.value_size];
-            memset(value, 0, var.value_size);
-            qstrcpy(value, (*i)->str_value.data());
-            stream.write(value, var.value_size);
-            delete[] value;
-        }
-
-        locals.var_count ++;
+        vars.append(obj);
     }
 
-    stream.seek(0);
-    stream.write((const char*)&locals, sizeof(DBG_LOCALS));
-    stream.close();
+    QJsonObject root;
+    root["vars"] = vars;
 
-    write(DBG_REQUEST_UPDATELOCALS, buffer);
+    write(DBG_REQUEST_UPDATELOCALS_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
 void DbgServer::UpdateDbgInfo(const int &index)
 {
+    // При завершении программы стек может оказаться пустым - обновлять нечего.
+    if (!m_curdbg || m_curdbg->GetStackCount() == 0)
+        return;
+
     UpdateText(index);
     UpdateVariables(index);
     UpdateStack();
@@ -305,148 +294,134 @@ void DbgServer::UpdateWatch()
 
 void DbgServer::UpdateStack()
 {
-    QVector<DBG_UPDATSTACK> packet;
+    // Клиент исторически декодировал имя файла/функции как IBM 866,
+    // а namespace как Windows-1251 - сохраняем то же отображение.
+    QTextCodec *oem866 = QTextCodec::codecForName("IBM 866");
+    QTextCodec *cp1251 = QTextCodec::codecForName("Windows-1251");
+
+    QJsonArray frames;
     int rv = m_curdbg->GetStackCount();
     for (int i = 0; i < rv; i++)
     {
-        DBG_UPDATSTACK item;
-        memset(&item, 0, sizeof(DBG_UPDATSTACK));
-
         Qt::HANDLE stack = m_curdbg->GetStackAt(i);
         Qt::HANDLE module = RslGetModuleFromStack(stack);
         Qt::HANDLE hst = RslGetStatementFromStack(stack);
 
+        int offs = 0, len = 0;
         int isBtrStream = 0;
-        RslGetStatementPos(hst, &item.offs, &item.len);
-        item.line = RslGetModuleLine(module, item.offs, item.len);
-        item.module = reinterpret_cast<qint64>(module);
+        RslGetStatementPos(hst, &offs, &len);
 
-        qstrcpy(item.fullfilename, RslGetModuleFile(module, &isBtrStream));
-        qstrcpy(item.func, RslGetProcNameFromStack(stack));
+        QJsonObject frame;
+        frame["offs"] = offs;
+        frame["len"] = len;
+        frame["line"] = RslGetModuleLine(module, offs, len);
+        frame["module"] = QString::number(reinterpret_cast<qint64>(module));
+        frame["file"] = oem866->toUnicode(RslGetModuleFile(module, &isBtrStream));
+        frame["func"] = oem866->toUnicode(RslGetProcNameFromStack(stack));
 
         if (m_ProcNamespace.contains(stack))
-            qstrcpy(item.fnamespace, m_ProcNamespace[stack]->data());
+            frame["namespace"] = cp1251->toUnicode(m_ProcNamespace[stack]->data());
 
-        packet.append(item);
+        frames.append(frame);
     }
 
-    QByteArray data;
-    QDataStream stream(&data, QIODevice::WriteOnly);
+    QJsonObject root;
+    root["frames"] = frames;
 
-    if (!packet.isEmpty())
-        stream.writeRawData((const char*)packet.constData(), sizeof(DBG_UPDATSTACK) * packet.size());
-
-    DBGHEADER hdr;
-    DbgMakeHeader(&hdr, sizeof(DBG_UPDATEBP), DBG_REQUEST_UPDATESTACK);
-    write(&hdr, nullptr, 0, data);
+    write(DBG_REQUEST_UPDATESTACK_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
 void DbgServer::UpdateText(const int &index)
 {
+    // Текст модуля читается из файла в IBM 866, имя файла - тоже OEM,
+    // поэтому оба декодируем этим кодеком (клиент больше не трогает кодировки).
+    QTextCodec *oem866 = QTextCodec::codecForName("IBM 866");
+
     RSLMODULE mod = m_curdbg->GetCurModule(index);
 
     int offs = 0;
     int len = 0;
-    int line = 0;
 
     RSLSTMT statement = m_curdbg->GetCurStatement(&offs, &len, index);
-    line = m_curdbg->GetStatementLine(offs, len, mod);
+    int line = m_curdbg->GetStatementLine(offs, len, mod);
 
-    DBGHEADER hdr;
-    DBG_UPDATETEXT updtext;
-    memset(&updtext, 0, sizeof(DBG_UPDATETEXT));
+    // NB: UPDATETEXT отправляется на КАЖДОМ шаге - клиент по нему обновляет
+    // позицию курсора. Не "оптимизировать" условием m_curModuleInView != mod:
+    // иначе при шагах внутри одного модуля клиент не узнает о смене строки.
+    QJsonObject root;
+    root["offs"] = offs;
+    root["len"] = len;
+    root["line"] = line;
+    root["curModuleInView"] = QString::number(reinterpret_cast<qint64>(mod));
 
-    updtext.offs = offs;
-    updtext.len = len;
-    updtext.line = line;
-    updtext.curModuleInView = reinterpret_cast<qint64>(mod);
+    int isBtrStream = 0;
+    char *filename = RslGetModuleFile((Qt::HANDLE)mod, &isBtrStream);
 
-    // NB: в оригинале m_curModuleInView в DbgServer никогда не инициализировался
-    // и не присваивался, поэтому пакет UPDATETEXT отправлялся на КАЖДОМ шаге -
-    // клиент по нему обновляет позицию курсора. Не "оптимизировать" условием
-    // m_curModuleInView != mod: иначе при шагах внутри одного модуля клиент
-    // не узнает о смене строки.
-    {
-        int isBtrStream = 0;
-        char *filename = RslGetModuleFile((Qt::HANDLE)mod, &isBtrStream);
+    QString content = ReadTextFileContent(filename, "IBM 866");
 
-        QString content = ReadTextFileContent(filename, "IBM 866");
-        QByteArray text = content.toLocal8Bit();
+    root["filename"] = oem866->toUnicode(filename);
+    if (!content.isEmpty())
+        root["text"] = content;
 
-        qstrncpy(updtext.filename, filename, sizeof(updtext.filename));
-        updtext.size = text.size();
+    write(DBG_REQUEST_UPDATETEXT_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
 
-        DbgMakeHeader(&hdr, sizeof(DBG_UPDATETEXT) + updtext.size, DBG_REQUEST_UPDATETEXT);
-        write(&hdr, &updtext, sizeof(DBG_UPDATETEXT), text);
+    m_curModuleInView = mod;
 
-        m_curModuleInView = mod;
-    }
-
-    TBpData* bp;
-    QVector<DBGBPDATA> tmpbp;
+    // Брейкпоинты текущего модуля
+    QJsonArray bps;
 
     int nBP = m_curdbg->GetBPCount();
     for (int i = 0; i < nBP; ++i)
     {
-        bp = m_curdbg->GetBP(i);
+        TBpData *bp = m_curdbg->GetBP(i);
         if (mod == bp->mod)
         {
-            DBGBPDATA dbgbp;
-            fillBpData(&dbgbp, bp);
-            tmpbp.push_back(dbgbp);
-            /*if (bp->bp_type == BP_DISABLED)
-                color = RGB (0, 0, 255);
-            else if (bp->bp_type == BP_ENABLED)
-                color = RGB(0, 255, 0);
-            else
-                color = GetSysColor (COLOR_WINDOW);
-
-            SetTextColor (bp->offs, bp->len, color, bp->line);*/
+            QJsonObject item;
+            item["type"] = (int)bp->bp_type;
+            item["offs"] = bp->offs;
+            item["len"] = bp->len;
+            item["line"] = bp->line;
+            item["key"] = QString::number((qint64)bp->key);
+            item["modname"] = bp->modname;
+            item["mod"] = QString::number(reinterpret_cast<qint64>(bp->mod));
+            item["stmt"] = QString::number(reinterpret_cast<qint64>(bp->stmt));
+            bps.append(item);
         }
     }
 
-    if (!tmpbp.empty())
+    if (!bps.isEmpty())
     {
-        QByteArray bpdata;
-        QDataStream stream(&bpdata, QIODevice::WriteOnly);
-        stream.writeRawData((char*)&tmpbp[0], sizeof(DBGBPDATA) * tmpbp.size());
-
-        DBG_UPDATEBP upd;
-        upd.count = tmpbp.size();
-
-        DBGHEADER hdr;
-        DbgMakeHeader(&hdr, sizeof(DBG_UPDATEBP), DBG_REQUEST_UPDATEBP);
-        write(&hdr, &upd, sizeof(DBG_UPDATETEXT), bpdata);
+        QJsonObject bproot;
+        bproot["bps"] = bps;
+        write(DBG_REQUEST_UPDATEBP_JSON, QJsonDocument(bproot).toJson(QJsonDocument::Compact));
     }
 }
 
-void DbgServer::ShowVariableValue(const DBG_GETVALUENFO &getvalue)
+void DbgServer::ShowVariableValue(const qint64 &val, const qint64 &info)
 {
+    // Имя/тип/значение исторически декодировались клиентом как Windows-1251.
+    QTextCodec *codec = QTextCodec::codecForName("Windows-1251");
+
     int size = 0;
     char str_name[MAX_NAME] = {0};
     char str_type[MAX_TYPENAME] = {0};
     char str_value[MAX_VALUE] = {0};
-    RSLVALUE val  = NULL;
-    m_curdbg->do_GetValueSize(reinterpret_cast<RSLVINFO>(getvalue.info), &size);
+    RSLVALUE v  = NULL;
+    m_curdbg->do_GetValueSize(reinterpret_cast<RSLVINFO>(info), &size);
 
     if (size)
     {
-        QByteArray result;
-        DBG_GETVALUENFO_RESULT resfata;
-        resfata.size = size + 1;
+        char *value = new char[size + 1];
+        memset(value, 0, size + 1);
+        m_curdbg->do_GetValueData(reinterpret_cast<RSLVINFO>(info), value, size + 1, 0, &size);
+        m_curdbg->do_RefreshInfo(reinterpret_cast<RSLVINFO>(info), &v, NULL, str_name, MAX_NAME, str_type, MAX_TYPENAME, str_value, MAX_VALUE);
 
-        char *value = new char[resfata.size];
-        memset(value, 0, resfata.size);
-        m_curdbg->do_GetValueData(reinterpret_cast<RSLVINFO>(getvalue.info), value, resfata.size, 0, &size);
-        m_curdbg->do_RefreshInfo(reinterpret_cast<RSLVINFO>(getvalue.info), &val, NULL, str_name, MAX_NAME, str_type, MAX_TYPENAME, str_value, MAX_VALUE);
+        QJsonObject root;
+        root["name"] = codec->toUnicode(str_name);
+        root["type"] = codec->toUnicode(str_type);
+        root["value"] = codec->toUnicode(QByteArray(value, size));
 
-        qstrcpy(resfata.str_name, str_name);
-        qstrcpy(resfata.str_type, str_type);
-
-        result.append((char*)&resfata, sizeof(DBG_GETVALUENFO_RESULT));
-        result.append(value, resfata.size);
-
-        write(DBG_REQUEST_GETVALUENFO, result);
+        write(DBG_REQUEST_GETVALUENFO_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
         delete[] value;
     }
 }
@@ -464,29 +439,33 @@ int DbgServer::RslGetModuleLine(Qt::HANDLE module, int offs, int len)
 
 bool DbgServer::serverActionEvent(ServerActionEvent *e)
 {
+    // Клиент мог прислать команду после завершения отладки (done()):
+    // CDebug уничтожен, все действия ниже требуют живого m_curdbg.
+    if (!m_curdbg)
+        return false;
+
     QByteArray &data = e->buffer();
-    if (e->action() == DBG_REQUEST_EXECCONTNUE)
+    if (e->action() == DBG_REQUEST_EXECCONTNUE_JSON)
     {
-        DBG_EXECCONTNUE *exec = (DBG_EXECCONTNUE*)data.data();
+        QJsonObject obj = QJsonDocument::fromJson(data).object();
         m_curdbg->SetDebugState(false);
-        m_curdbg->do_ExecContinue(exec->trace_log);
+        m_curdbg->do_ExecContinue(obj.value("traceLog").toInt());
         emit execContinue();
     }
-    else if (e->action() == DBG_REQUEST_EXPANDVARIABLE)
+    else if (e->action() == DBG_REQUEST_EXPANDVARIABLE_JSON)
     {
-        DBG_EXPANDVARIABLE *expand = (DBG_EXPANDVARIABLE*)data.data();
+        QJsonObject obj = QJsonDocument::fromJson(data).object();
 
         CLocals* pLocals = m_curdbg->GetLocals();
-        RSLSTACK st = m_curdbg->GetStackAt (expand->stackindex);
-        pLocals->ExpandV(expand->index);
-        //pLocals->CollectLocals (st, &prevStack, newDbg);
-        //pLocals->ExpandV(expand->index);//reinterpret_cast<RSLSTACK>(expand->st)
+        pLocals->ExpandV(obj.value("index").toInt());
         ShowVariables(0);
     }
-    else if (e->action() == DBG_REQUEST_GETVALUENFO)
+    else if (e->action() == DBG_REQUEST_GETVALUENFO_JSON)
     {
-        DBG_GETVALUENFO *getvalue = (DBG_GETVALUENFO*)data.data();
-        ShowVariableValue(*getvalue);
+        QJsonObject obj = QJsonDocument::fromJson(data).object();
+
+        ShowVariableValue(obj.value("val").toString().toLongLong(),
+                          obj.value("info").toString().toLongLong());
     }
 
     return DbgServerBase::serverActionEvent(e);

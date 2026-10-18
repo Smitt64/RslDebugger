@@ -45,8 +45,6 @@ protected:
     virtual bool serverEvent(QEvent *e);
     virtual bool serverActionEvent(ServerActionEvent *e);
 
-    void write(DBGHEADER *hdr, void *data, int len, const QByteArray &adddata = QByteArray());
-    void write(DBGHEADER *hdr, const QByteArray &adddata);
     void write(qint16 action, const QByteArray &data);
 
 protected:

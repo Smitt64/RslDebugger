@@ -16,9 +16,10 @@
 #include <QAction>
 #include <QTreeView>
 #include <QHeaderView>
-#include <QTextCodec>
-#include <QBuffer>
 #include <QItemSelectionModel>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonDocument>
 #include <varwatchdlg.h>
 //#include <QIODevice>
 
@@ -74,7 +75,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_pSocket(new QTcpSocket()),
     m_pFindDialog(nullptr)
 {
-    oem866 = QTextCodec::codecForName("IBM 866");
 
     ui->setupUi(this);
     setIconSize(QSize(16, 16));
@@ -245,13 +245,20 @@ bool MainWindow::connectToHost(const QString &hostName, quint16 port)
         return false;
     }
 
-    m_pSocket->waitForReadyRead();
-    QByteArray headerdata = m_pSocket->read(sizeof(DBGHEADER));
+    // Заголовок handshake может прийти по частям - дочитываем в цикле.
+    QByteArray headerdata;
+    while (headerdata.size() < (int)sizeof(DBGHEADER))
+    {
+        if (!m_pSocket->bytesAvailable() && !m_pSocket->waitForReadyRead())
+            break;
+
+        headerdata += m_pSocket->read(sizeof(DBGHEADER) - headerdata.size());
+    }
 
     if (headerdata.size() != sizeof(DBGHEADER))
     {
         m_LastError = QString("Invalid header size: expected %1, received %2")
-            .arg(sizeof(headerdata))
+            .arg(sizeof(DBGHEADER))
             .arg(headerdata.size());
 
         qCritical(dbg()) << m_LastError << headerdata;
@@ -275,6 +282,41 @@ bool MainWindow::connectToHost(const QString &hostName, quint16 port)
         m_LastError = "Invalid header action";
         qCritical(dbg()) << m_LastError;
 
+        m_pSocket->disconnectFromHost();
+        return false;
+    }
+
+    // Протокол v2: за заголовком handshake идёт DBG_HANDSHAKE с версией.
+    // Старый сервер шлёт size == 0 - остаёмся на версии 1.
+    m_ProtocolVersion = 1;
+
+    if (hdr->size > (qint32)sizeof(DBGHEADER))
+    {
+        const int payloadSize = hdr->size - (int)sizeof(DBGHEADER);
+        QByteArray payload;
+
+        while (payload.size() < payloadSize)
+        {
+            if (!m_pSocket->bytesAvailable())
+                m_pSocket->waitForReadyRead();
+
+            payload += m_pSocket->read(payloadSize - payload.size());
+        }
+
+        if (payload.size() >= (int)sizeof(DBG_HANDSHAKE))
+        {
+            const DBG_HANDSHAKE *hs = reinterpret_cast<const DBG_HANDSHAKE*>(payload.constData());
+            m_ProtocolVersion = hs->version;
+        }
+    }
+
+    qInfo(dbg()) << "Server protocol version:" << m_ProtocolVersion;
+
+    if (m_ProtocolVersion < RSLDBG_PROTOCOL_VERSION)
+    {
+        m_LastError = QStringLiteral("Устаревший rsldbg.dll: протокол v%1, требуется v%2. Пересоберите сервер.")
+                          .arg(m_ProtocolVersion).arg(RSLDBG_PROTOCOL_VERSION);
+        qCritical(dbg()) << m_LastError;
         m_pSocket->disconnectFromHost();
         return false;
     }
@@ -377,206 +419,216 @@ void MainWindow::write(const quint16 &acton, const QByteArray &data)
 
 void MainWindow::exec_continue(int trace_log)
 {
-    DBGHEADER hdr;
-    DbgMakeHeader(&hdr, sizeof(DBG_EXECCONTNUE), DBG_REQUEST_EXECCONTNUE);
+    QJsonObject obj;
+    obj["traceLog"] = trace_log;
 
-    DBG_EXECCONTNUE exec;
-    exec.trace_log = trace_log;
-
-    QByteArray data;
-    QDataStream stream(&data, QIODevice::WriteOnly);
-    stream.writeRawData((char*)&hdr, sizeof(DBGHEADER));
-    stream.writeRawData((char*)&exec, sizeof(DBG_EXECCONTNUE));
-
-    m_pSocket->write(data);
-    m_pSocket->waitForBytesWritten();
+    write(DBG_REQUEST_EXECCONTNUE_JSON, QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
 void MainWindow::expandVariable(const int &index, const qint64 &stack)
 {
-    DBG_EXPANDVARIABLE var;
-    var.index = index;
-    var.st = stack;
-
     QModelIndex Selected = m_StackDockWidget->view()->selectionModel()->currentIndex();
 
-    if (Selected.isValid())
-        var.stackindex = Selected.row();
-    else
-        var.stackindex = 0;
+    QJsonObject obj;
+    obj["index"] = index;
+    obj["stackindex"] = Selected.isValid() ? Selected.row() : 0;
+    obj["st"] = QString::number(stack);
 
-    write(DBG_REQUEST_EXPANDVARIABLE, &var, sizeof(DBG_EXPANDVARIABLE));
+    write(DBG_REQUEST_EXPANDVARIABLE_JSON, QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
 void MainWindow::showVarValue(const qint64 &val, const qint64 &info)
 {
-    DBG_GETVALUENFO value;
-    value.hash_id = 0;
-    value.val = val;
-    value.info = info;
+    QJsonObject obj;
+    obj["val"] = QString::number(val);
+    obj["info"] = QString::number(info);
+    obj["hash"] = "0";
 
-    write(DBG_REQUEST_GETVALUENFO, &value, sizeof(DBG_EXPANDVARIABLE));
+    write(DBG_REQUEST_GETVALUENFO_JSON, QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
 void MainWindow::readyRead()
 {
-    qint64 bytesAvailable = m_pSocket->bytesAvailable();
-
-    if (m_LastHeader.isEmpty())
-    {
-        if (bytesAvailable < sizeof(DBGHEADER))
-            return;
-    }
-    else
-    {
-        if (bytesAvailable < m_LastHeader.top().size)
-            return;
-    }
+    // Заголовок НЕ извлекаем из буфера (peek), пока не убедимся, что
+    // сообщение пришло целиком: иначе при фрагментации TCP-потока остаток
+    // тела будет прочитан как "заголовок" и поток рассинхронизируется.
+    if (m_pSocket->bytesAvailable() < (qint64)sizeof(DBGHEADER))
+        return;
 
     DBGHEADER header;
-    m_pSocket->read((char*)&header, sizeof(DBGHEADER));
+    m_pSocket->peek((char*)&header, sizeof(DBGHEADER));
 
     if (!DbgCheckHeader(&header))
     {
         m_LastError = "Invalid header magic";
         qCritical(dbg()) << m_LastError;
+        m_pSocket->disconnectFromHost();
         return;
     }
 
-    bytesAvailable = m_pSocket->bytesAvailable();
-    if (header.action == DBG_REQUEST_EVENT)
+    // Защита от мусорного размера: без неё read(size - sizeof(DBGHEADER))
+    // при size < sizeof(DBGHEADER) уходит в беззнаковое переполнение
+    // и пытается выделить гигабайты (bad_alloc, падение клиента).
+    if (header.size < (qint32)sizeof(DBGHEADER) || header.size > 64 * 1024 * 1024)
     {
-        DBGEVENT event;
-        m_pSocket->read((char*)&event, sizeof(DBGEVENT));
-        if (event.event == MSG_BREAKPOINT)
-        {
-            qDebug(dbg()) << "Handle breakpoint event. Is setted:" << (event.data.bp_event.BpSetted == 1 ? true : false);
-        }
+        m_LastError = QString("Invalid message size: %1").arg(header.size);
+        qCritical(dbg()) << m_LastError;
+        m_pSocket->disconnectFromHost();
+        return;
+    }
+
+    if (m_pSocket->bytesAvailable() < header.size)
+        return; // тело ещё не пришло целиком - дождёмся следующего readyRead
+
+    m_pSocket->read(sizeof(DBGHEADER)); // теперь извлекаем заголовок
+    const qint64 payloadSize = (qint64)header.size - (qint64)sizeof(DBGHEADER);
+    if (header.action == DBG_REQUEST_EVENT_JSON)
+    {
+        QByteArray payload = m_pSocket->read(payloadSize);
+        QJsonObject obj = QJsonDocument::fromJson(payload).object();
+
+        if (obj.value("event").toString() == QLatin1String("breakpoint"))
+            qDebug(dbg()) << "Handle breakpoint event. Is setted:" << obj.value("set").toBool();
         else
-            qDebug(dbg()) << "Handle unknown event:" << event.event;
+            qDebug(dbg()) << "Handle unknown event:" << obj.value("event").toString();
     }
-    else if (header.action == DBG_REQUEST_UPDATETEXT)
+    else if (header.action == DBG_REQUEST_UPDATETEXT_JSON)
     {
-        DBG_UPDATETEXT updatetext;
-        m_pSocket->read((char*)&updatetext, sizeof(DBG_UPDATETEXT));
-        bytesAvailable = m_pSocket->bytesAvailable();
+        // Протокол v2: текст и имя файла уже в Unicode (UTF-8 JSON).
+        QByteArray payload = m_pSocket->read(payloadSize);
+        QJsonObject obj = QJsonDocument::fromJson(payload).object();
 
-        if (updatetext.size)
+        if (obj.contains("text"))
         {
-            char *buffer = new char[updatetext.size + 1];
-            memset(buffer, 0, updatetext.size + 1);
-            m_pSocket->read(buffer, updatetext.size);
-            QString text = QString::fromLocal8Bit(buffer, updatetext.size);
-            delete[] buffer;
-
-            m_pCodeEditor->setPlainText(text);
-            setWindowFilePath(updatetext.filename);
+            m_pCodeEditor->setPlainText(obj.value("text").toString());
+            setWindowFilePath(obj.value("filename").toString());
         }
 
-        m_CurModuleInView = updatetext.curModuleInView;
-        m_pCodeEditor->setCurrentHighlightLine(updatetext.line);
-        m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconCurrentLine, updatetext.line);
+        int offs = obj.value("offs").toInt();
+        int len = obj.value("len").toInt();
+        int line = obj.value("line").toInt();
 
-        applyCurrentStatement(updatetext.offs, updatetext.len, updatetext.line);
-        qInfo(dbg()) << "Update source requested:" << updatetext.filename;
-        qInfo(dbg()) << "Offset:" << updatetext.offs << "Length:" << updatetext.len << "Line:" << updatetext.line;
+        m_CurModuleInView = obj.value("curModuleInView").toString().toLongLong();
+        m_pCodeEditor->setCurrentHighlightLine(line);
+        m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconCurrentLine, line);
+
+        applyCurrentStatement(offs, len, line);
+        qInfo(dbg()) << "Update source requested:" << obj.value("filename").toString();
+        qInfo(dbg()) << "Offset:" << offs << "Length:" << len << "Line:" << line;
     }
-    else if (header.action == DBG_REQUEST_UPDATEBP)
+    else if (header.action == DBG_REQUEST_UPDATEBP_JSON)
     {
         qInfo(dbg()) << "Update breakpoints requested";
 
-        DBG_UPDATEBP upd;
-        m_pSocket->read((char*)&upd, sizeof(DBG_UPDATEBP));
+        QByteArray payload = m_pSocket->read(payloadSize);
+        QJsonObject obj = QJsonDocument::fromJson(payload).object();
 
-        QByteArray bpdata = m_pSocket->read(sizeof(DBGBPDATA) * upd.count);
-
-        DBGBPDATA *bp = (DBGBPDATA*)bpdata.data();
-        for (int i = 0; i < upd.count; i++, bp++)
+        const QJsonArray bps = obj.value("bps").toArray();
+        for (const QJsonValue &entry : bps)
         {
-            if (bp->bp_type == DBGBP_ENABLED)
-                m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconBreakpoint, bp->line);
-            else if (bp->bp_type == DBGBP_DISABLED)
-                m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconBreakpointDisable, bp->line);
+            const QJsonObject bp = entry.toObject();
+            int type = bp.value("type").toInt();
+            int line = bp.value("line").toInt();
+
+            if (type == DBGBP_ENABLED)
+                m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconBreakpoint, line);
+            else if (type == DBGBP_DISABLED)
+                m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconBreakpointDisable, line);
         }
     }
-    else if (header.action == DBG_REQUEST_UPDATESTACK)
+    else if (header.action == DBG_REQUEST_UPDATESTACK_JSON)
     {
         m_CallStackModel->clear();
         m_pCodeEditorProvider->clearEnterFunction();
-        QByteArray data = m_pSocket->read(header.size - sizeof(DBGHEADER));
 
-        int count = data.size() / sizeof(DBG_UPDATSTACK);
+        QByteArray payload = m_pSocket->read(payloadSize);
+        QJsonObject obj = QJsonDocument::fromJson(payload).object();
 
-        DBG_UPDATSTACK *stack = (DBG_UPDATSTACK*)data.data();
-        for (int i = 0; i < count; i++, stack++)
+        const QJsonArray frames = obj.value("frames").toArray();
+        int i = 0;
+        for (const QJsonValue &entry : frames)
         {
-            m_CallStackModel->append(stack);
+            const QJsonObject frame = entry.toObject();
 
-            if (i != 0 && m_CurModuleInView == stack->module)
-                m_pCodeEditorProvider->addEnterFunction(stack->line);
+            StackItem item;
+            item.func = frame.value("func").toString();
+            item.fnamespace = frame.value("namespace").toString();
+            item.fullfilename = frame.value("file").toString();
+            item.offs = frame.value("offs").toInt();
+            item.len = frame.value("len").toInt();
+            item.line = frame.value("line").toInt();
+
+            m_CallStackModel->append(item);
+
+            qint64 module = frame.value("module").toString().toLongLong();
+            if (i != 0 && m_CurModuleInView == module)
+                m_pCodeEditorProvider->addEnterFunction(item.line);
+
+            i++;
         }
     }
-    else if (header.action == DBG_REQUEST_UPDATELOCALS)
+    else if (header.action == DBG_REQUEST_UPDATELOCALS_JSON)
     {
-        QTextCodec *codec = QTextCodec::codecForName("Windows-1251"); // Windows-1250   IBM 866
-        QByteArray data = m_pSocket->read(header.size - sizeof(DBGHEADER));
-        QBuffer stream(&data);
-        stream.open(QIODevice::ReadOnly);
+        // Протокол v2: переменные в JSON (UTF-8), хендлы - строками,
+        // чтобы не терять точность в double.
+        QByteArray payload = m_pSocket->read(payloadSize);
 
-        DBG_LOCALS locals;
-        stream.read((char*)&locals, sizeof(DBG_LOCALS));
+        QJsonParseError parseError = {};
+        QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
 
-        //m_LocalsModel->clear();
-        m_LocalsModel->startResetVarables();
-        for (int i = 0; i < locals.var_count; i++)
+        if (parseError.error != QJsonParseError::NoError || !doc.isObject())
         {
-            DBG_VARIABLEDATA valdata;
-            stream.read((char*)&valdata, sizeof(DBG_VARIABLEDATA));
+            qWarning(dbg()) << "Invalid UPDATELOCALS_JSON payload:"
+                            << parseError.errorString() << "at" << parseError.offset;
+        }
+        else
+        {
+            const QJsonArray vars = doc.object().value("vars").toArray();
 
-            qstrcpy(valdata.str_name, codec->toUnicode(valdata.str_name).toStdString().c_str());
-            qstrcpy(valdata.str_type, codec->toUnicode(valdata.str_type).toStdString().c_str());
+            m_LocalsModel->startResetVarables();
 
-            QString val;
-            if (valdata.value_size)
+            for (const QJsonValue &entry : vars)
             {
-                char *value = new char[valdata.value_size];
-                memset(value, 0, valdata.value_size);
-                //QByteArray tmpval = stream.read(valdata.value_size);
-                stream.read(value, valdata.value_size);
-                //OemToCharA(tmpval.data(), value);
-                val = codec->toUnicode(value);
-                //qDebug() << "val" << val << value;
-                delete[] value;
+                const QJsonObject obj = entry.toObject();
+
+                VarWatchData var;
+                var.index = obj.value("index").toInt();
+                var.name = obj.value("name").toString();
+                var.type = obj.value("type").toString();
+                var.proc = obj.value("proc").toString();
+                var.depth = obj.value("depth").toInt(1);
+                var.isObject = obj.value("object").toBool();
+                var.isExpanded = obj.value("expanded").toBool();
+                var.isLvalue = obj.value("lvalue").toBool();
+                var.isFakeChildren = obj.value("fakeChildren").toBool();
+
+                var.val  = obj.value("val").toString().toLongLong();
+                var.exp  = obj.value("exp").toString().toLongLong();
+                var.st   = obj.value("st").toString().toLongLong();
+                var.procHandle = obj.value("procHandle").toString().toLongLong();
+                var.info = obj.value("info").toString().toLongLong();
+                var.mod  = obj.value("mod").toString().toLongLong();
+
+                m_LocalsModel->append(var, obj.value("value").toString());
             }
 
-            m_LocalsModel->append(&valdata, val);
+            m_LocalsModel->finishResetVarables();
         }
-        m_LocalsModel->finishResetVarables();
     }
-    else if (header.action == DBG_REQUEST_GETVALUENFO)
+    else if (header.action == DBG_REQUEST_GETVALUENFO_JSON)
     {
-        QTextCodec *codec = QTextCodec::codecForName("Windows-1251");
-        QByteArray data = m_pSocket->read(header.size - sizeof(DBGHEADER));
-        QBuffer stream(&data);
-        stream.open(QIODevice::ReadOnly);
+        // Протокол v2: name/type/value уже в Unicode.
+        QByteArray payload = m_pSocket->read(payloadSize);
+        QJsonObject obj = QJsonDocument::fromJson(payload).object();
 
-        DBG_GETVALUENFO_RESULT resfata;
-        stream.read((char*)&resfata, sizeof(DBG_GETVALUENFO_RESULT));
-
-        QByteArray value = stream.read(resfata.size);
         VarWatchDlg dlg(this);
-        dlg.setValue(codec->toUnicode(value));
-        dlg.setVarName(codec->toUnicode(resfata.str_name));
-        dlg.setVarType(codec->toUnicode(resfata.str_type));
+        dlg.setValue(obj.value("value").toString());
+        dlg.setVarName(obj.value("name").toString());
+        dlg.setVarType(obj.value("type").toString());
         dlg.exec();
-        //QInputDialog::getMultiLineText(this, "", "", codec->toUnicode(value));
     }
 
-    bytesAvailable = m_pSocket->bytesAvailable();
-
-    if (!m_LastHeader.isEmpty())
-        m_LastHeader.pop();
-
-    if (bytesAvailable)
+    // Если в буфере уже лежит следующее сообщение - обрабатываем сразу.
+    if (m_pSocket->bytesAvailable() >= (qint64)sizeof(DBGHEADER))
         readyRead();
 }

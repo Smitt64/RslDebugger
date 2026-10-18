@@ -59,7 +59,6 @@ protected:
     virtual bool event(QEvent *event) Q_DECL_OVERRIDE;
 
 private:
-    QTextCodec *oem866;
 
     void InitDebugToolBar();
     void InitOtherToolBars();
@@ -69,6 +68,7 @@ private:
     Ui::MainWindow *ui;
     QString m_LastError;
     qint64 m_CurModuleInView;
+    qint32 m_ProtocolVersion = 1; // из handshake сервера; 1 = legacy без версии
     QScopedPointer<QTcpSocket> m_pSocket;
     QScopedPointer<LogEventModel> m_LogModel;
     QScopedPointer<CallStackModel> m_CallStackModel;
@@ -81,8 +81,6 @@ private:
 
     CodeEditor *m_pCodeEditor;
     DbgEditorLineWidgetProvider *m_pCodeEditorProvider;
-
-    QStack<DBGHEADER> m_LastHeader;
 
     FindDialog *m_pFindDialog;
 };

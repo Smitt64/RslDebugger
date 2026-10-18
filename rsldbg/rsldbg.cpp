@@ -142,6 +142,17 @@ HDBG Rsldbg::init(HRD inst,TDbgIntf * _dbg_ftable)
 
 void Rsldbg::done(HDBG hDBG)
 {
+    // CDebug ниже удаляется из m_Dbg (SmartPtr уничтожает объект), а сервер
+    // продолжает жить в пуле потоков. Обнуляем m_curdbg, чтобы поздние события
+    // из очереди сервера не упали на уже освобождённом объекте.
+    CDebug *finishedDbg = (CDebug*)hDBG;
+    DbgServer *finishedSrv = m_Servers.value(finishedDbg, nullptr);
+    if (finishedSrv)
+    {
+        finishedSrv->m_curdbg = nullptr;
+        m_Servers.remove(finishedDbg);
+    }
+
     if (m_Dbg.size() == 1)
     {
         is_ui = false;

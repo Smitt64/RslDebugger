@@ -110,6 +110,9 @@ RSLPROC CDebug::GetCurProc(int index)
     if(index == -1)
         _index = m_index;
 
+    if((_index < 0) || ((size_t)_index >= m_stackinfo.size()))
+        return NULL;
+
     return m_stackinfo[_index]->proc;
 }
 
@@ -119,6 +122,9 @@ RSLSTACK CDebug::GetCurStack (int index)
 
     if(index == -1)
         _index = m_index;
+
+    if((_index < 0) || ((size_t)_index >= m_stackinfo.size()))
+        return NULL;
 
     return m_stackinfo[_index]->st;
 }
@@ -229,10 +235,20 @@ DisplayVar* CDebug::FindRootItem(DisplayVar* var, BOOL surv)
 RSLMODULE CDebug::GetCurModule (int index)
 {
     if(index != -1)
+    {
+        if((index < 0) || ((size_t)index >= m_stackinfo.size()))
+            return NULL;
+
         return m_stackinfo[index]->mod;
+    }
 
     if(m_curmod == (RSLMODULE)-1)
+    {
+        if((m_index < 0) || ((size_t)m_index >= m_stackinfo.size()))
+            return NULL;
+
         return m_stackinfo[m_index]->mod;
+    }
     else
         return m_curmod;
 }
@@ -243,6 +259,13 @@ RSLSTMT CDebug::GetCurStatement(int* offs, int* len, int index)
 
     if(index == -1)
         _index = m_index;
+
+    if((_index < 0) || ((size_t)_index >= m_stackinfo.size()))
+    {
+        *offs = 0;
+        *len  = 0;
+        return NULL;
+    }
 
     *offs = m_stackinfo[_index]->offs;
     *len  = m_stackinfo[_index]->len;
