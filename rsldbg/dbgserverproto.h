@@ -11,7 +11,10 @@
 // v1: legacy, handshake без payload, все сообщения - бинарные упакованные структуры
 // v2: handshake несёт DBG_HANDSHAKE, все сообщения - JSON (UTF-8),
 //     хендлы (RSLVALUE/RSLSTACK/...) передаются строками во избежание double
-#define RSLDBG_PROTOCOL_VERSION 2
+// v3: после handshake клиент обязан прислать DBG_REQUEST_AUTH с токеном,
+//     сервер отвечает DBG_REQUEST_AUTH {"ok":bool}; неверный токен - разрыв
+//     и возврат сервера к accept (re-accept).
+#define RSLDBG_PROTOCOL_VERSION 3
 
 #define DBG_REQUEST_HANDSHAKE 100
 #define DBG_REQUEST_UPDATELOCALS_JSON 109
@@ -22,6 +25,11 @@
 #define DBG_REQUEST_UPDATESTACK_JSON 114
 #define DBG_REQUEST_EXPANDVARIABLE_JSON 115
 #define DBG_REQUEST_GETVALUENFO_JSON 116
+#define DBG_REQUEST_AUTH 117
+
+// Well-known UDP-порт для анонсов отладочных сессий (heartbeat) и
+// discover-запросов. Слушают GUI (диалог выбора сессии) и MCP-адаптер.
+#define RSLDBG_ANNOUNCE_PORT 51491
 
 #define	MSG_BREAKPOINT   (QEvent::User + 1)
 #define MSG_FINISH       (QEvent::User + 2)

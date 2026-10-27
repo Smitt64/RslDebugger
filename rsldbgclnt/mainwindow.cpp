@@ -1,5 +1,9 @@
 #include <Windows.h>
+#include <windowsx.h>
+#include <dwmapi.h>
 #include "mainwindow.h"
+#include "windowtitlebar.h"
+#include "SARibbon.h"
 #include "models/varwatchmodel.h"
 #include "stdviewdockwidget.h"
 #include "logevent.h"
@@ -14,6 +18,9 @@
 #include <codeeditor/codeeditor.h>
 #include <codeeditor/cppcodehighlighter.h>
 #include <QAction>
+#include <QMenu>
+#include <QPainter>
+#include <QToolButton>
 #include <QTreeView>
 #include <QHeaderView>
 #include <QItemSelectionModel>
@@ -23,7 +30,37 @@
 #include <varwatchdlg.h>
 //#include <QIODevice>
 
-Q_LOGGING_CATEGORY(dbg, "rsldbg")
+// GUI-реализация DbgClient: переопределяет обработчики сообщений сервера
+// и обновляет окно отладчика (MainWindow объявляет его дружественным).
+class GuiDbgClient : public DbgClient
+{
+public:
+    explicit GuiDbgClient(MainWindow *wnd)
+        : DbgClient(wnd), m_Wnd(wnd)
+    {
+    }
+
+protected:
+    void onEvent(const QJsonObject &obj) Q_DECL_OVERRIDE         { m_Wnd->handleEvent(obj); }
+    void onUpdateText(const QJsonObject &obj) Q_DECL_OVERRIDE    { m_Wnd->handleUpdateText(obj); }
+    void onUpdateBreakpoints(const QJsonObject &obj) Q_DECL_OVERRIDE { m_Wnd->handleUpdateBreakpoints(obj); }
+    void onUpdateStack(const QJsonObject &obj) Q_DECL_OVERRIDE   { m_Wnd->handleUpdateStack(obj); }
+    void onUpdateLocals(const QJsonObject &obj) Q_DECL_OVERRIDE  { m_Wnd->handleUpdateLocals(obj); }
+    void onValueInfo(const QJsonObject &obj) Q_DECL_OVERRIDE     { m_Wnd->handleValueInfo(obj); }
+
+private:
+    MainWindow *m_Wnd;
+};
+
+// Фирменная палитра RS-Bank V.6 (по Bank256.bmp): бирюза + оранжевый акцент.
+// Макросы-литералы, чтобы конкатенироваться со строками QSS на этапе компиляции.
+#define RSB_BRAND_COLOR   "#0E6B65" // основной: заголовок, статусбар, окантовка
+#define RSB_BRAND_HOVER   "#178E88" // hover пунктов меню и системных кнопок
+#define RSB_BRAND_PRESSED "#093F3B" // нажатое состояние
+#define RSB_ACCENT_COLOR  "#FCB332" // оранжевая полоса (как внизу Bank256)
+#define RSB_CLOSE_HOVER   "#E81123" // кнопка закрытия — системный красный
+#define RSB_CLOSE_PRESSED "#F1707A"
+
 // русский комментарий
 static QString strippedActionText(QString s)
 {
@@ -72,12 +109,30 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow),
     m_CurModuleInView(0),
-    m_pSocket(new QTcpSocket()),
     m_pFindDialog(nullptr)
 {
 
     ui->setupUi(this);
     setIconSize(QSize(16, 16));
+
+    // Протокольный клиент: транспорт и handshake живут в DbgClient,
+    // GUI-реакция на сообщения - в GuiDbgClient -> handle*-методах
+    m_Client = new GuiDbgClient(this);
+
+    // Окно без системной рамки: заголовок рисуем сами
+    // (меню в заголовке, системные кнопки SARibbon справа).
+    setWindowFlag(Qt::FramelessWindowHint);
+    setWindowTitle(tr("RSL Debugger"));
+    setWindowIcon(QIcon::fromTheme("AppLogo"));
+    setContentsMargins(1, 1, 1, 1); // 1px под окантовку в цвет темы
+    InitTitleBar();
+
+    // Статус-бар в цвет заголовка + фирменная оранжевая полоса сверху
+    // (как оранжевая полоса внизу Bank256)
+    ui->statusbar->setStyleSheet(QString::fromLatin1(
+        "QStatusBar { background-color: " RSB_BRAND_COLOR "; color: #FFFFFF;"
+        " border-top: 2px solid " RSB_ACCENT_COLOR "; }"
+        "QStatusBar::item { border: none; }"));
 
     setDockNestingEnabled(true);
     setDockOptions(GroupedDragging | AnimatedDocks | AllowTabbedDocks);
@@ -107,7 +162,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_pCodeEditorProvider = new DbgEditorLineWidgetProvider();
     m_pCodeEditor->setCodeEditorLineWidgetProvider(m_pCodeEditorProvider);
 
-    ToolApplyHighlighter(m_pCodeEditor, HighlighterRsl);
+    // Фирменная тема подсветки (регистрируется статически из qrc)
+    ToolApplyHighlighter(m_pCodeEditor, HighlighterRsl, QStringLiteral("RS-Bank"));
 
     m_LogDockWidget->setAutoScrollToBottom(true);
     m_LogDockWidget->setWindowTitle(tr("Debugger log"));
@@ -132,8 +188,15 @@ MainWindow::MainWindow(QWidget *parent)
     InitDebugToolBar();
     InitOtherToolBars();
 
-    connect(m_pSocket.data(), &QTcpSocket::connected, this, &MainWindow::dbgConnected);
-    connect(m_pSocket.data(), &QTcpSocket::disconnected, this, &MainWindow::dbgDisconnected);
+    connect(m_Client, &DbgClient::connected, this, []()
+    {
+        qInfo(dbg()) << "Connected...";
+    });
+    connect(m_Client, &DbgClient::disconnected, this, []()
+    {
+        qInfo(dbg()) << "Disconnected...";
+    });
+    connect(m_Client, &DbgClient::disconnected, this, &MainWindow::close);
     connect(m_LocalsDockWidget.data(), &VarWatchDockWidget::expandVariable, this, &MainWindow::expandVariable);
     connect(m_LocalsDockWidget.data(), &VarWatchDockWidget::showVarValue, this, &MainWindow::showVarValue);
 }
@@ -144,20 +207,273 @@ MainWindow::~MainWindow()
     qDebug(dbg()) << "~MainWindow()";
 }
 
+// Заголовок в стиле Visual Studio: классические меню в строке заголовка,
+// системные кнопки SARibbon поверх неё справа.
+void MainWindow::InitTitleBar()
+{
+    m_TitleMenuBar = new WindowTitleMenuBar(this);
+    m_TitleMenuBar->setStyleSheet(QString::fromLatin1(
+        "QMenuBar { background-color: " RSB_BRAND_COLOR "; color: #FFFFFF; padding-left: 28px; }"
+        "QMenuBar::item { background: transparent; padding: 5px 9px; }"
+        "QMenuBar::item:selected { background-color: " RSB_BRAND_HOVER "; }"
+        "QMenuBar::item:pressed { background-color: " RSB_BRAND_PRESSED "; }"
+        // Выпадающие меню: выделенный пункт — оранжевый акцент бренда
+        "QMenu { background-color: #FFFFFF; border: 1px solid " RSB_BRAND_COLOR "; }"
+        "QMenu::item:selected { background-color: " RSB_ACCENT_COLOR "; color: #1A1A1A; }"));
+
+    QMenu *menuFile = m_TitleMenuBar->addMenu(tr("File"));
+    menuFile->addAction(ui->actionExit);
+    connect(ui->actionExit, &QAction::triggered, this, &QWidget::close);
+
+    QMenu *menuEdit = m_TitleMenuBar->addMenu(tr("Edit"));
+    menuEdit->addAction(ui->actionFind);
+    menuEdit->addAction(ui->actionFindNext);
+
+    QMenu *menuDebug = m_TitleMenuBar->addMenu(tr("Debug"));
+    menuDebug->addAction(ui->actionResume);
+    menuDebug->addAction(ui->actionStop);
+    menuDebug->addSeparator();
+    menuDebug->addAction(ui->actionStepInto);
+    menuDebug->addAction(ui->actionStepOver);
+    menuDebug->addAction(ui->actionStepOut);
+
+    setMenuBar(m_TitleMenuBar);
+
+    // Кнопки свернуть/развернуть/закрыть. Родителем должно быть главное
+    // окно — слоты SARibbonSystemButtonBar вызывают parentWidget()->close() и т.п.
+    // Флаги задаём явно: у frameless-окна нет Min/Max/CloseButtonHint,
+    // и по флагам родителя кнопки бы не создались.
+    m_SysButtons = new SARibbonSystemButtonBar(this, Qt::WindowMinMaxButtonsHint | Qt::WindowCloseButtonHint);
+    m_SysButtons->setStyleSheet(QString::fromLatin1(
+        "SARibbonSystemButtonBar { background: transparent; }"
+        "SARibbonSystemButtonBar QToolButton { background: transparent; border: none; }"
+        "SARibbonSystemButtonBar QToolButton:hover { background-color: " RSB_BRAND_HOVER "; }"
+        "SARibbonSystemButtonBar QToolButton:pressed { background-color: " RSB_BRAND_PRESSED "; }"
+        "SARibbonSystemButtonBar QToolButton#SACloseWindowButton:hover { background-color: " RSB_CLOSE_HOVER "; }"
+        "SARibbonSystemButtonBar QToolButton#SACloseWindowButton:pressed { background-color: " RSB_CLOSE_PRESSED "; }"));
+
+    // Иконки SARibbon сам не назначает (рассчитано на QSS `image:`,
+    // но SVG без width/height имеет натуральный размер 1024px) —
+    // ставим QIcon, он масштабирует SVG под iconSize.
+    const QSize iconSize(10, 10); // глифы размером как в заголовке VS
+
+    if (QToolButton *btn = m_SysButtons->findChild<QToolButton*>(QStringLiteral("SAMinimizeWindowButton")))
+    {
+        btn->setIcon(QIcon(QStringLiteral(":/SARibbon/image/resource/Titlebar_Min.svg")));
+        btn->setIconSize(iconSize);
+    }
+
+    if (QToolButton *btn = m_SysButtons->findChild<QToolButton*>(QStringLiteral("SACloseWindowButton")))
+    {
+        btn->setIcon(QIcon(QStringLiteral(":/SARibbon/image/resource/Titlebar_Close.svg")));
+        btn->setIconSize(iconSize);
+    }
+
+    updateMaxButtonIcon();
+
+    updateSystemButtonsGeometry();
+}
+
+void MainWindow::updateMaxButtonIcon()
+{
+    if (!m_SysButtons)
+        return;
+
+    QToolButton *btn = m_SysButtons->findChild<QToolButton*>(QStringLiteral("SAMaximizeWindowButton"));
+
+    if (!btn)
+        return;
+
+    const QString res = isMaximized()
+        ? QStringLiteral(":/SARibbon/image/resource/Titlebar_Normal.svg")
+        : QStringLiteral(":/SARibbon/image/resource/Titlebar_Max.svg");
+
+    btn->setIcon(QIcon(res));
+    btn->setIconSize(QSize(10, 10));
+}
+
+void MainWindow::updateSystemButtonsGeometry()
+{
+    if (!m_SysButtons || !m_TitleMenuBar)
+        return;
+
+    m_SysButtons->setWindowTitleHeight(m_TitleMenuBar->height());
+
+    const QSize hint = m_SysButtons->sizeHint();
+    const int w = qMax(hint.width(), 105); // 3 кнопки по 35px как минимум
+
+    m_SysButtons->setGeometry(width() - w, 0, w, m_TitleMenuBar->height());
+    m_SysButtons->raise();
+    m_TitleMenuBar->setRightReserved(w);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    updateSystemButtonsGeometry();
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    if (event->type() == QEvent::WindowStateChange)
+    {
+        if (m_SysButtons)
+        {
+            m_SysButtons->setWindowStates(windowState());
+            updateMaxButtonIcon();
+        }
+
+        // Резервируем 1px под окантовку только в нормальном состоянии
+        const bool borderless = isMaximized() || isFullScreen();
+        setContentsMargins(borderless ? 0 : 1, borderless ? 0 : 1,
+                           borderless ? 0 : 1, borderless ? 0 : 1);
+        update();
+    }
+
+    QMainWindow::changeEvent(event);
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+
+    static bool framePrepared = false;
+
+    if (!framePrepared)
+    {
+        // Qt создаёт frameless-окно как чистый WS_POPUP — без WS_THICKFRAME
+        // Windows не даёт менять размер и разворачивать окно двойным кликом.
+        // Возвращаем стили вручную (визуально рамка не появляется).
+        const HWND hwnd = reinterpret_cast<HWND>(winId());
+        const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+        SetWindowLongPtr(hwnd, GWL_STYLE, style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+
+        // Тень у окна с WS_THICKFRAME рисует сам DWM.
+        // DwmExtendFrameIntoClientArea здесь НЕ используем: расширенная
+        // рамка рисуется DWM поверх крайнего пикселя клиентской области
+        // и перекрывает нашу окантовку в цвет темы.
+
+        // Windows 11 скругляет углы всем окнам — отключаем, нужны прямые
+        // (на Windows 10 вызов просто вернёт ошибку, игнорируем)
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+        DWORD cornerPref = 1; // DWMWCP_DONOTROUND
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPref, sizeof(cornerPref));
+
+        framePrepared = true;
+    }
+}
+
+// Тонкая окантовка в цвет темы (в maximized-состоянии не рисуем —
+// там contentsMargins нулевые и рамка всё равно за экраном)
+void MainWindow::paintEvent(QPaintEvent *event)
+{
+    QMainWindow::paintEvent(event);
+
+    if (!isMaximized() && !isFullScreen())
+    {
+        QPainter p(this);
+        p.setPen(QColor(QString::fromLatin1(RSB_BRAND_COLOR)));
+        p.drawRect(rect().adjusted(0, 0, -1, -1));
+    }
+}
+
+// Hit-test заголовка и краёв frameless-окна.
+// Края дают изменение размера, полоса заголовка (кроме пунктов меню
+// и системных кнопок) — перетаскивание, Aero Snap и разворачивание
+// двойным кликом.
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, long *result)
+{
+    MSG *msg = static_cast<MSG*>(message);
+
+    // Qt маршрутизирует nativeEvent по hwnd — сюда приходят только сообщения
+    // этого окна. Сравнивать msg->hwnd с winId() НЕЛЬЗЯ: winId() форсирует
+    // создание платформенного окна, а первое сообщение (WM_SETICON из
+    // конструктора QWindowsWindow) приходит, когда оно ещё создаётся —
+    // получается бесконечная рекурсия создания окна.
+    if (msg->message == WM_NCCALCSIZE)
+    {
+        // WS_THICKFRAME добавил неклиентскую область, которую DefWindowProc
+        // закрашивает белым фоном класса окна (белая полоса сверху).
+        // Возврат 0: клиентская область = весь прямоугольник окна.
+        if (!msg->wParam) // простой RECT: по документации результат 1
+        {
+            *result = 1;
+            return true;
+        }
+
+        if (IsZoomed(msg->hwnd))
+        {
+            // Развёрнутое окно: ограничить клиент рабочей областью монитора,
+            // чтобы не перекрывать панель задач.
+            NCCALCSIZE_PARAMS *params = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam);
+            HMONITOR monitor = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONULL);
+
+            if (monitor)
+            {
+                MONITORINFO info{sizeof(info)};
+
+                if (GetMonitorInfoW(monitor, &info))
+                    params->rgrc[0] = info.rcWork;
+            }
+        }
+
+        *result = 0;
+        return true;
+    }
+
+    if (msg->message == WM_NCHITTEST)
+    {
+        RECT winRect{};
+        GetWindowRect(msg->hwnd, &winRect);
+
+        const qreal dpr = devicePixelRatioF();
+        const QPoint local(qRound((GET_X_LPARAM(msg->lParam) - winRect.left) / dpr),
+                           qRound((GET_Y_LPARAM(msg->lParam) - winRect.top) / dpr));
+        const int w = qRound((winRect.right - winRect.left) / dpr);
+        const int h = qRound((winRect.bottom - winRect.top) / dpr);
+
+        if (!isMaximized() && !isFullScreen())
+        {
+            const int bw = 5;
+            const bool onLeft   = local.x() >= 0 && local.x() < bw;
+            const bool onRight  = local.x() >= w - bw && local.x() < w;
+            const bool onTop    = local.y() >= 0 && local.y() < bw;
+            const bool onBottom = local.y() >= h - bw && local.y() < h;
+
+            if (onTop && onLeft)        { *result = HTTOPLEFT;     return true; }
+            if (onTop && onRight)       { *result = HTTOPRIGHT;    return true; }
+            if (onBottom && onLeft)     { *result = HTBOTTOMLEFT;  return true; }
+            if (onBottom && onRight)    { *result = HTBOTTOMRIGHT; return true; }
+            if (onLeft)                 { *result = HTLEFT;        return true; }
+            if (onRight)                { *result = HTRIGHT;       return true; }
+            if (onTop)                  { *result = HTTOP;         return true; }
+            if (onBottom)               { *result = HTBOTTOM;      return true; }
+        }
+
+        QList<QRect> excluded = m_TitleMenuBar->interactiveRects();
+
+        if (m_SysButtons)
+            excluded.append(m_SysButtons->geometry());
+
+        if (SA::isTitleBarDragArea(local, QRect(0, 0, w, h),
+                                   m_TitleMenuBar->height(), excluded,
+                                   isMaximized() || isFullScreen()))
+        {
+            *result = HTCAPTION;
+            return true;
+        }
+    }
+
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
 QString MainWindow::lastError()
 {
-    return m_LastError;
-}
-
-void MainWindow::dbgConnected()
-{
-    qInfo(dbg()) << "Connected...";
-}
-
-void MainWindow::dbgDisconnected()
-{
-    qInfo(dbg()) << "Disconnected...";
-    close();
+    return m_Client->lastError();
 }
 
 void MainWindow::InitOtherToolBars()
@@ -203,136 +519,42 @@ void MainWindow::InitDebugToolBar()
 
     connect(ui->actionStepOver, &QAction::triggered, [=]()
     {
-        exec_continue(EXECCONTNUE_STEP_OVER);
+        m_Client->execContinue(EXECCONTNUE_STEP_OVER);
     });
 
     connect(ui->actionStepInto, &QAction::triggered, [=]()
     {
-        exec_continue(EXECCONTNUE_STEP_INTO);
+        m_Client->execContinue(EXECCONTNUE_STEP_INTO);
     });
 
     connect(ui->actionStepOut, &QAction::triggered, [=]()
     {
-        exec_continue(EXECCONTNUE_STEP_OUT);
+        m_Client->execContinue(EXECCONTNUE_STEP_OUT);
     });
 
     connect(ui->actionResume, &QAction::triggered, [=]()
     {
-        exec_continue(EXECCONTNUE_DBG_RUN);
+        m_Client->execContinue(EXECCONTNUE_DBG_RUN);
     });
 
     connect(ui->actionStop, &QAction::triggered, [=]()
     {
-        exec_continue(EXECCONTNUE_DBG_ABORT);
+        m_Client->execContinue(EXECCONTNUE_DBG_ABORT);
     });
 }
 
-bool MainWindow::connectToHost(const QString &hostName, quint16 port)
+bool MainWindow::connectToHost(const QString &hostName, quint16 port, const QString &authToken)
 {
-    bool hr = true;
-    m_pSocket->connectToHost(hostName, port);
-
-    qInfo(dbg()) << "Try connect to" << hostName << ":" << port;
-    m_pSocket->waitForConnected();
-    qInfo(dbg()) << "State" << m_pSocket->state();
-
-    if (m_pSocket->state() != QAbstractSocket::ConnectedState)
-    {
-        m_LastError = QString("Can't connecto to debug host %1:%2")
-                        .arg(hostName)
-                        .arg(port);
-        qCritical(dbg()) << m_LastError;
-        return false;
-    }
-
-    // Заголовок handshake может прийти по частям - дочитываем в цикле.
-    QByteArray headerdata;
-    while (headerdata.size() < (int)sizeof(DBGHEADER))
-    {
-        if (!m_pSocket->bytesAvailable() && !m_pSocket->waitForReadyRead())
-            break;
-
-        headerdata += m_pSocket->read(sizeof(DBGHEADER) - headerdata.size());
-    }
-
-    if (headerdata.size() != sizeof(DBGHEADER))
-    {
-        m_LastError = QString("Invalid header size: expected %1, received %2")
-            .arg(sizeof(DBGHEADER))
-            .arg(headerdata.size());
-
-        qCritical(dbg()) << m_LastError << headerdata;
-
-        m_pSocket->disconnectFromHost();
-        return false;
-    }
-
-    DBGHEADER *hdr = (DBGHEADER*)headerdata.data();
-    if (!DbgCheckHeader(hdr))
-    {
-        m_LastError = "Invalid header magic";
-        qCritical(dbg()) << m_LastError;
-
-        m_pSocket->disconnectFromHost();
-        return false;
-    }
-
-    if (hdr->action != DBG_REQUEST_HANDSHAKE)
-    {
-        m_LastError = "Invalid header action";
-        qCritical(dbg()) << m_LastError;
-
-        m_pSocket->disconnectFromHost();
-        return false;
-    }
-
-    // Протокол v2: за заголовком handshake идёт DBG_HANDSHAKE с версией.
-    // Старый сервер шлёт size == 0 - остаёмся на версии 1.
-    m_ProtocolVersion = 1;
-
-    if (hdr->size > (qint32)sizeof(DBGHEADER))
-    {
-        const int payloadSize = hdr->size - (int)sizeof(DBGHEADER);
-        QByteArray payload;
-
-        while (payload.size() < payloadSize)
-        {
-            if (!m_pSocket->bytesAvailable())
-                m_pSocket->waitForReadyRead();
-
-            payload += m_pSocket->read(payloadSize - payload.size());
-        }
-
-        if (payload.size() >= (int)sizeof(DBG_HANDSHAKE))
-        {
-            const DBG_HANDSHAKE *hs = reinterpret_cast<const DBG_HANDSHAKE*>(payload.constData());
-            m_ProtocolVersion = hs->version;
-        }
-    }
-
-    qInfo(dbg()) << "Server protocol version:" << m_ProtocolVersion;
-
-    if (m_ProtocolVersion < RSLDBG_PROTOCOL_VERSION)
-    {
-        m_LastError = QStringLiteral("Устаревший rsldbg.dll: протокол v%1, требуется v%2. Пересоберите сервер.")
-                          .arg(m_ProtocolVersion).arg(RSLDBG_PROTOCOL_VERSION);
-        qCritical(dbg()) << m_LastError;
-        m_pSocket->disconnectFromHost();
-        return false;
-    }
-
-    qInfo(dbg()) << "connectToHost" << hr;
-    connect(m_pSocket.data(), &QTcpSocket::readyRead, this, &MainWindow::readyRead);
-
-    if (m_pSocket->bytesAvailable())
-        readyRead();
-
-    return hr;
+    m_Client->setAuthToken(authToken);
+    return m_Client->connectToHost(hostName, port);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    m_pSocket->disconnectFromHost();
+    // Аналог команды Stop с тулбара: перед закрытием шлём отладчику abort,
+    // чтобы исполняемый макрос не остался подвешенным вместе с процессом-клиентом
+    m_Client->stop();
+    m_Client->disconnectFromHost();
     QMainWindow::closeEvent(event);
 }
 
@@ -389,246 +611,149 @@ void MainWindow::applyCurrentStatement(const int &offs, const int &len, const in
         cursor.setPosition(offs + len - line + 1, QTextCursor::KeepAnchor);
 
         QTextCharFormat format;
-        format.setBackground(QColor("#fb000d"));
+        // Текущая инструкция — осветлённый фирменный оранжевый (#FCB332 + белый),
+        // тёмный текст под ним остаётся читаемым
+        format.setBackground(QColor("#FDD78F"));
 
         m_pCodeEditor->clearUserSelection();
         m_pCodeEditor->appendUserSelection(cursor, format);
     }
 }
 
-void MainWindow::write(const quint16 &acton, void *data, const int &len)
-{
-    QByteArray tmp;
-    tmp.append((char*)data, len);
-    write(acton, tmp);
-}
-
-void MainWindow::write(const quint16 &acton, const QByteArray &data)
-{
-    DBGHEADER hdr;
-    DbgMakeHeader(&hdr, data.size(), acton);
-
-    QByteArray tmp;
-    QDataStream stream(&tmp, QIODevice::WriteOnly);
-    stream.writeRawData((char*)&hdr, sizeof(DBGHEADER));
-    tmp.append(data);
-
-    m_pSocket->write(tmp);
-    m_pSocket->waitForBytesWritten();
-}
-
-void MainWindow::exec_continue(int trace_log)
-{
-    QJsonObject obj;
-    obj["traceLog"] = trace_log;
-
-    write(DBG_REQUEST_EXECCONTNUE_JSON, QJsonDocument(obj).toJson(QJsonDocument::Compact));
-}
-
 void MainWindow::expandVariable(const int &index, const qint64 &stack)
 {
     QModelIndex Selected = m_StackDockWidget->view()->selectionModel()->currentIndex();
 
-    QJsonObject obj;
-    obj["index"] = index;
-    obj["stackindex"] = Selected.isValid() ? Selected.row() : 0;
-    obj["st"] = QString::number(stack);
-
-    write(DBG_REQUEST_EXPANDVARIABLE_JSON, QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    m_Client->expandVariable(index, stack, Selected.isValid() ? Selected.row() : 0);
 }
 
 void MainWindow::showVarValue(const qint64 &val, const qint64 &info)
 {
-    QJsonObject obj;
-    obj["val"] = QString::number(val);
-    obj["info"] = QString::number(info);
-    obj["hash"] = "0";
-
-    write(DBG_REQUEST_GETVALUENFO_JSON, QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    m_Client->showVarValue(val, info);
 }
 
-void MainWindow::readyRead()
+// Обработчики сообщений сервера - вызываются из GuiDbgClient.
+// Разбор кадра (заголовок, размер, JSON) уже выполнен в DbgClient.
+
+void MainWindow::handleEvent(const QJsonObject &obj)
 {
-    // Заголовок НЕ извлекаем из буфера (peek), пока не убедимся, что
-    // сообщение пришло целиком: иначе при фрагментации TCP-потока остаток
-    // тела будет прочитан как "заголовок" и поток рассинхронизируется.
-    if (m_pSocket->bytesAvailable() < (qint64)sizeof(DBGHEADER))
-        return;
+    if (obj.value("event").toString() == QLatin1String("breakpoint"))
+        qDebug(dbg()) << "Handle breakpoint event. Is setted:" << obj.value("set").toBool();
+    else
+        qDebug(dbg()) << "Handle unknown event:" << obj.value("event").toString();
+}
 
-    DBGHEADER header;
-    m_pSocket->peek((char*)&header, sizeof(DBGHEADER));
-
-    if (!DbgCheckHeader(&header))
+void MainWindow::handleUpdateText(const QJsonObject &obj)
+{
+    // Протокол v2: текст и имя файла уже в Unicode (UTF-8 JSON).
+    if (obj.contains("text"))
     {
-        m_LastError = "Invalid header magic";
-        qCritical(dbg()) << m_LastError;
-        m_pSocket->disconnectFromHost();
-        return;
+        m_pCodeEditor->setPlainText(obj.value("text").toString());
+        setWindowFilePath(obj.value("filename").toString());
     }
 
-    // Защита от мусорного размера: без неё read(size - sizeof(DBGHEADER))
-    // при size < sizeof(DBGHEADER) уходит в беззнаковое переполнение
-    // и пытается выделить гигабайты (bad_alloc, падение клиента).
-    if (header.size < (qint32)sizeof(DBGHEADER) || header.size > 64 * 1024 * 1024)
+    int offs = obj.value("offs").toInt();
+    int len = obj.value("len").toInt();
+    int line = obj.value("line").toInt();
+
+    m_CurModuleInView = obj.value("curModuleInView").toString().toLongLong();
+    m_pCodeEditor->setCurrentHighlightLine(line);
+    m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconCurrentLine, line);
+
+    applyCurrentStatement(offs, len, line);
+    qInfo(dbg()) << "Update source requested:" << obj.value("filename").toString();
+    qInfo(dbg()) << "Offset:" << offs << "Length:" << len << "Line:" << line;
+}
+
+void MainWindow::handleUpdateBreakpoints(const QJsonObject &obj)
+{
+    qInfo(dbg()) << "Update breakpoints requested";
+
+    const QJsonArray bps = obj.value("bps").toArray();
+    for (const QJsonValue &entry : bps)
     {
-        m_LastError = QString("Invalid message size: %1").arg(header.size);
-        qCritical(dbg()) << m_LastError;
-        m_pSocket->disconnectFromHost();
-        return;
+        const QJsonObject bp = entry.toObject();
+        int type = bp.value("type").toInt();
+        int line = bp.value("line").toInt();
+
+        if (type == DBGBP_ENABLED)
+            m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconBreakpoint, line);
+        else if (type == DBGBP_DISABLED)
+            m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconBreakpointDisable, line);
+    }
+}
+
+void MainWindow::handleUpdateStack(const QJsonObject &obj)
+{
+    m_CallStackModel->clear();
+    m_pCodeEditorProvider->clearEnterFunction();
+
+    const QJsonArray frames = obj.value("frames").toArray();
+    int i = 0;
+    for (const QJsonValue &entry : frames)
+    {
+        const QJsonObject frame = entry.toObject();
+
+        StackItem item;
+        item.func = frame.value("func").toString();
+        item.fnamespace = frame.value("namespace").toString();
+        item.fullfilename = frame.value("file").toString();
+        item.offs = frame.value("offs").toInt();
+        item.len = frame.value("len").toInt();
+        item.line = frame.value("line").toInt();
+
+        m_CallStackModel->append(item);
+
+        qint64 module = frame.value("module").toString().toLongLong();
+        if (i != 0 && m_CurModuleInView == module)
+            m_pCodeEditorProvider->addEnterFunction(item.line);
+
+        i++;
+    }
+}
+
+void MainWindow::handleUpdateLocals(const QJsonObject &obj)
+{
+    // Протокол v2: переменные в JSON (UTF-8), хендлы - строками,
+    // чтобы не терять точность в double.
+    const QJsonArray vars = obj.value("vars").toArray();
+
+    m_LocalsModel->startResetVarables();
+
+    for (const QJsonValue &entry : vars)
+    {
+        const QJsonObject varObj = entry.toObject();
+
+        VarWatchData var;
+        var.index = varObj.value("index").toInt();
+        var.name = varObj.value("name").toString();
+        var.type = varObj.value("type").toString();
+        var.proc = varObj.value("proc").toString();
+        var.depth = varObj.value("depth").toInt(1);
+        var.isObject = varObj.value("object").toBool();
+        var.isExpanded = varObj.value("expanded").toBool();
+        var.isLvalue = varObj.value("lvalue").toBool();
+        var.isFakeChildren = varObj.value("fakeChildren").toBool();
+
+        var.val  = varObj.value("val").toString().toLongLong();
+        var.exp  = varObj.value("exp").toString().toLongLong();
+        var.st   = varObj.value("st").toString().toLongLong();
+        var.procHandle = varObj.value("procHandle").toString().toLongLong();
+        var.info = varObj.value("info").toString().toLongLong();
+        var.mod  = varObj.value("mod").toString().toLongLong();
+
+        m_LocalsModel->append(var, varObj.value("value").toString());
     }
 
-    if (m_pSocket->bytesAvailable() < header.size)
-        return; // тело ещё не пришло целиком - дождёмся следующего readyRead
+    m_LocalsModel->finishResetVarables();
+}
 
-    m_pSocket->read(sizeof(DBGHEADER)); // теперь извлекаем заголовок
-    const qint64 payloadSize = (qint64)header.size - (qint64)sizeof(DBGHEADER);
-    if (header.action == DBG_REQUEST_EVENT_JSON)
-    {
-        QByteArray payload = m_pSocket->read(payloadSize);
-        QJsonObject obj = QJsonDocument::fromJson(payload).object();
-
-        if (obj.value("event").toString() == QLatin1String("breakpoint"))
-            qDebug(dbg()) << "Handle breakpoint event. Is setted:" << obj.value("set").toBool();
-        else
-            qDebug(dbg()) << "Handle unknown event:" << obj.value("event").toString();
-    }
-    else if (header.action == DBG_REQUEST_UPDATETEXT_JSON)
-    {
-        // Протокол v2: текст и имя файла уже в Unicode (UTF-8 JSON).
-        QByteArray payload = m_pSocket->read(payloadSize);
-        QJsonObject obj = QJsonDocument::fromJson(payload).object();
-
-        if (obj.contains("text"))
-        {
-            m_pCodeEditor->setPlainText(obj.value("text").toString());
-            setWindowFilePath(obj.value("filename").toString());
-        }
-
-        int offs = obj.value("offs").toInt();
-        int len = obj.value("len").toInt();
-        int line = obj.value("line").toInt();
-
-        m_CurModuleInView = obj.value("curModuleInView").toString().toLongLong();
-        m_pCodeEditor->setCurrentHighlightLine(line);
-        m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconCurrentLine, line);
-
-        applyCurrentStatement(offs, len, line);
-        qInfo(dbg()) << "Update source requested:" << obj.value("filename").toString();
-        qInfo(dbg()) << "Offset:" << offs << "Length:" << len << "Line:" << line;
-    }
-    else if (header.action == DBG_REQUEST_UPDATEBP_JSON)
-    {
-        qInfo(dbg()) << "Update breakpoints requested";
-
-        QByteArray payload = m_pSocket->read(payloadSize);
-        QJsonObject obj = QJsonDocument::fromJson(payload).object();
-
-        const QJsonArray bps = obj.value("bps").toArray();
-        for (const QJsonValue &entry : bps)
-        {
-            const QJsonObject bp = entry.toObject();
-            int type = bp.value("type").toInt();
-            int line = bp.value("line").toInt();
-
-            if (type == DBGBP_ENABLED)
-                m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconBreakpoint, line);
-            else if (type == DBGBP_DISABLED)
-                m_pCodeEditorProvider->addItemId(DbgEditorLineWidgetProvider::IconBreakpointDisable, line);
-        }
-    }
-    else if (header.action == DBG_REQUEST_UPDATESTACK_JSON)
-    {
-        m_CallStackModel->clear();
-        m_pCodeEditorProvider->clearEnterFunction();
-
-        QByteArray payload = m_pSocket->read(payloadSize);
-        QJsonObject obj = QJsonDocument::fromJson(payload).object();
-
-        const QJsonArray frames = obj.value("frames").toArray();
-        int i = 0;
-        for (const QJsonValue &entry : frames)
-        {
-            const QJsonObject frame = entry.toObject();
-
-            StackItem item;
-            item.func = frame.value("func").toString();
-            item.fnamespace = frame.value("namespace").toString();
-            item.fullfilename = frame.value("file").toString();
-            item.offs = frame.value("offs").toInt();
-            item.len = frame.value("len").toInt();
-            item.line = frame.value("line").toInt();
-
-            m_CallStackModel->append(item);
-
-            qint64 module = frame.value("module").toString().toLongLong();
-            if (i != 0 && m_CurModuleInView == module)
-                m_pCodeEditorProvider->addEnterFunction(item.line);
-
-            i++;
-        }
-    }
-    else if (header.action == DBG_REQUEST_UPDATELOCALS_JSON)
-    {
-        // Протокол v2: переменные в JSON (UTF-8), хендлы - строками,
-        // чтобы не терять точность в double.
-        QByteArray payload = m_pSocket->read(payloadSize);
-
-        QJsonParseError parseError = {};
-        QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
-
-        if (parseError.error != QJsonParseError::NoError || !doc.isObject())
-        {
-            qWarning(dbg()) << "Invalid UPDATELOCALS_JSON payload:"
-                            << parseError.errorString() << "at" << parseError.offset;
-        }
-        else
-        {
-            const QJsonArray vars = doc.object().value("vars").toArray();
-
-            m_LocalsModel->startResetVarables();
-
-            for (const QJsonValue &entry : vars)
-            {
-                const QJsonObject obj = entry.toObject();
-
-                VarWatchData var;
-                var.index = obj.value("index").toInt();
-                var.name = obj.value("name").toString();
-                var.type = obj.value("type").toString();
-                var.proc = obj.value("proc").toString();
-                var.depth = obj.value("depth").toInt(1);
-                var.isObject = obj.value("object").toBool();
-                var.isExpanded = obj.value("expanded").toBool();
-                var.isLvalue = obj.value("lvalue").toBool();
-                var.isFakeChildren = obj.value("fakeChildren").toBool();
-
-                var.val  = obj.value("val").toString().toLongLong();
-                var.exp  = obj.value("exp").toString().toLongLong();
-                var.st   = obj.value("st").toString().toLongLong();
-                var.procHandle = obj.value("procHandle").toString().toLongLong();
-                var.info = obj.value("info").toString().toLongLong();
-                var.mod  = obj.value("mod").toString().toLongLong();
-
-                m_LocalsModel->append(var, obj.value("value").toString());
-            }
-
-            m_LocalsModel->finishResetVarables();
-        }
-    }
-    else if (header.action == DBG_REQUEST_GETVALUENFO_JSON)
-    {
-        // Протокол v2: name/type/value уже в Unicode.
-        QByteArray payload = m_pSocket->read(payloadSize);
-        QJsonObject obj = QJsonDocument::fromJson(payload).object();
-
-        VarWatchDlg dlg(this);
-        dlg.setValue(obj.value("value").toString());
-        dlg.setVarName(obj.value("name").toString());
-        dlg.setVarType(obj.value("type").toString());
-        dlg.exec();
-    }
-
-    // Если в буфере уже лежит следующее сообщение - обрабатываем сразу.
-    if (m_pSocket->bytesAvailable() >= (qint64)sizeof(DBGHEADER))
-        readyRead();
+void MainWindow::handleValueInfo(const QJsonObject &obj)
+{
+    // Протокол v2: name/type/value уже в Unicode.
+    VarWatchDlg dlg(this);
+    dlg.setValue(obj.value("value").toString());
+    dlg.setVarName(obj.value("name").toString());
+    dlg.setVarType(obj.value("type").toString());
+    dlg.exec();
 }

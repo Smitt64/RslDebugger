@@ -9,6 +9,7 @@
 #include <QLoggingCategory>
 #include <QQueue>
 #include <QAtomicInt>
+#include <QScopedPointer>
 
 Q_DECLARE_LOGGING_CATEGORY(dbgServer)
 
@@ -16,6 +17,7 @@ class CDebug;
 class QProcess;
 class QTextCodec;
 class ServerActionEvent;
+class DbgAnnouncer;
 class DbgServerBase : public QObject, public QRunnable
 {
     Q_OBJECT
@@ -62,8 +64,16 @@ protected:
 
 private:
     QEvent* peekServerEvent();
+
+    // Фаза авторизации на принятом (пока блокирующем) сокете: handshake ->
+    // ожидание DBG_REQUEST_AUTH {"client", "token"?} -> ответ {"ok":bool}.
+    bool waitAuth();
+    int recvAll(char *dst, int size);
+
     QQueue<QEvent*> m_Messages;
     unsigned int ClientSocket;
+    QString m_Token; // пусто = авторизация не требуется (только 127.0.0.1)
+    QScopedPointer<DbgAnnouncer> m_Announcer;
 };
 
 #endif // DBGSERVERBASE_H

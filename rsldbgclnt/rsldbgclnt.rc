@@ -1,0 +1,3 @@
+#include <WinResrc.h>
+
+IDI_ICON1 ICON DISCARDABLE "icons/AppLogo.ico"

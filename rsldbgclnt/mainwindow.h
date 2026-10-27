@@ -2,11 +2,11 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-#include <QTcpSocket>
 #include <QLoggingCategory>
 #include <QStack>
 //#define IGNORE_INCLUDE
 #include "dbgserverproto.h"
+#include "dbgclient.h"
 
 Q_DECLARE_LOGGING_CATEGORY(dbg)
 
@@ -17,6 +17,7 @@ class MainWindow;
 QT_END_NAMESPACE
 
 class CodeEditor;
+class QJsonObject;
 class LogEventModel;
 class StdViewDockWidget;
 class CallStackModel;
@@ -24,9 +25,16 @@ class VarWatchModel;
 class VarWatchDockWidget;
 class FindDialog;
 class DbgEditorLineWidgetProvider;
+class WindowTitleMenuBar;
+class SARibbonSystemButtonBar;
+class GuiDbgClient;
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
+
+    // GuiDbgClient (наследник DbgClient) вызывает handle*-методы
+    // и обращается к GUI-членам напрямую
+    friend class GuiDbgClient;
 
 public:
     enum DBG_EVENTS
@@ -38,13 +46,10 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
-    bool connectToHost(const QString &hostName, quint16 port);
+    bool connectToHost(const QString &hostName, quint16 port, const QString &authToken = QString());
     QString lastError();
 
 public slots:
-    void dbgConnected();
-    void dbgDisconnected();
-    void readyRead();
 
 private slots:
     void expandVariable(const int &index, const qint64 &stack);
@@ -53,23 +58,34 @@ private slots:
     void onFindNext();
 
 protected:
-    void write(const quint16 &acton, const QByteArray &data);
-    void write(const quint16 &acton, void *data, const int &len);
     virtual void closeEvent(QCloseEvent *event) Q_DECL_OVERRIDE;
     virtual bool event(QEvent *event) Q_DECL_OVERRIDE;
+    virtual bool nativeEvent(const QByteArray &eventType, void *message, long *result) Q_DECL_OVERRIDE;
+    virtual void resizeEvent(QResizeEvent *event) Q_DECL_OVERRIDE;
+    virtual void changeEvent(QEvent *event) Q_DECL_OVERRIDE;
+    virtual void showEvent(QShowEvent *event) Q_DECL_OVERRIDE;
+    virtual void paintEvent(QPaintEvent *event) Q_DECL_OVERRIDE;
 
 private:
 
+    void InitTitleBar();
+    void updateSystemButtonsGeometry();
+    void updateMaxButtonIcon();
     void InitDebugToolBar();
     void InitOtherToolBars();
-    void exec_continue(int trace_log);
     void applyCurrentStatement(const int &offs, const int &len, const int &line);
 
+    // Обработчики сообщений сервера - вызываются из GuiDbgClient
+    void handleEvent(const QJsonObject &obj);
+    void handleUpdateText(const QJsonObject &obj);
+    void handleUpdateBreakpoints(const QJsonObject &obj);
+    void handleUpdateStack(const QJsonObject &obj);
+    void handleUpdateLocals(const QJsonObject &obj);
+    void handleValueInfo(const QJsonObject &obj);
+
     Ui::MainWindow *ui;
-    QString m_LastError;
     qint64 m_CurModuleInView;
-    qint32 m_ProtocolVersion = 1; // из handshake сервера; 1 = legacy без версии
-    QScopedPointer<QTcpSocket> m_pSocket;
+    GuiDbgClient *m_Client = nullptr;
     QScopedPointer<LogEventModel> m_LogModel;
     QScopedPointer<CallStackModel> m_CallStackModel;
 
@@ -83,5 +99,8 @@ private:
     DbgEditorLineWidgetProvider *m_pCodeEditorProvider;
 
     FindDialog *m_pFindDialog;
+
+    WindowTitleMenuBar *m_TitleMenuBar = nullptr;
+    SARibbonSystemButtonBar *m_SysButtons = nullptr;
 };
 #endif // MAINWINDOW_H

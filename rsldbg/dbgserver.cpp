@@ -23,6 +23,7 @@
 #include <QJsonObject>
 #include <QJsonDocument>
 #include "rsldbg.h"
+#include "dbgsettings.h"
 
 QString toolProcessStateText(qint16 State);
 QString toolProcessExitStatusText(qint16 State);
@@ -105,6 +106,11 @@ QString DbgServer::ReadTextFileContent(const QString &filename, const QString &e
 
 bool DbgServer::startApp()
 {
+    // В режимах agent/gui_remote клиент подключается сам, GUI не запускаем
+    // (проверка режима также есть в DbgServerBase::run(), дублируем для ясности).
+    if (dbgSettings().clientMode != DbgClientGui)
+        return true;
+
     QNetworkAddressEntry adress;
     foreach(const QNetworkInterface &qNetInterface, QNetworkInterface::allInterfaces())
     {
@@ -124,6 +130,13 @@ bool DbgServer::startApp()
 
     QString program = toolFindDebugClient();
     qCInfo(dbgServer()) << QString("Starting debug client: %1").arg(program);
+
+    if (port() <= 0)
+    {
+        qCCritical(dbgServer()) << "Invalid server port (0), refusing to start client";
+        return false;
+    }
+
     m_pProc.reset(new QProcess());
     m_pProc->setProgram(program);
     m_pProc->setArguments(

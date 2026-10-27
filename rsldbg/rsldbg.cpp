@@ -1,9 +1,7 @@
 #include "dbgserver.h"
 #include "qdebug.h"
-#include "ui/events/dbgbreakpointevent.h"
-#include "ui/events/dbgtraceevent.h"
-#include "ui/mainwindow.h"
 #include "server/updatedbginfoevent.h"
+#include "dbgsettings.h"
 #include "server/breakpointevent.h"
 #include "cdebug.h"
 #include "rsl/dbgintf.h"
@@ -51,9 +49,9 @@ Rsldbg::Rsldbg() :
     m_pApp(nullptr),
     argv(nullptr),
     is_inited(false),
-    is_ui(false)
+    is_ui(false),
+    m_CurDbg(nullptr)
 {
-    QIcon::setThemeName("vswin2019");
     QStringList arguments = QApplication::arguments();
 
     int argc = arguments.count();
@@ -157,12 +155,6 @@ void Rsldbg::done(HDBG hDBG)
     {
         is_ui = false;
 
-        if (m_pWndMain)
-        {
-            m_pWndMain->close();
-            m_pWndMain.reset();
-        }
-
         CDebug* aDBG = (CDebug*)hDBG;
         QVector<SpDebugPtrType>::iterator i;
         for(i = m_Dbg.begin(); i != m_Dbg.end(); ++i)
@@ -188,7 +180,7 @@ void Rsldbg::done(HDBG hDBG)
         {
             if ((*i)->GetInst() == aDBG->GetInst())
             {
-                if(m_pWndMain->m_curdbg == GetImpl(m_Dbg[0]))
+                if(m_CurDbg == GetImpl(m_Dbg[0]))
                 {
                     if(cur_ctr != 1){
                         ctr = 1;
@@ -196,7 +188,7 @@ void Rsldbg::done(HDBG hDBG)
                         ctr = cur_ctr - 1;
                     }
                 }
-                m_pWndMain->m_curdbg = GetImpl(m_Dbg[ctr]);
+                m_CurDbg = GetImpl(m_Dbg[ctr]);
                 m_Dbg.erase(i);
                 break;
             }
@@ -224,9 +216,6 @@ int Rsldbg::DbgBreak(HDBG hDBG, uint32 data)
 
 int Rsldbg::process(HDBG hDBG, TBpData *data)
 {
-    //m_pWndMain->showMaximized();
-
-    //DbgBreakpointEvent event((CDebug*)hDBG, data);
     CDebug* pDebug = (CDebug* )hDBG;
 
     int result = 1;
@@ -260,16 +249,15 @@ int Rsldbg::process(HDBG hDBG, TBpData *data)
 
 void Rsldbg::trace(HDBG hinst,const char *str)
 {
-    CDebug* pDebug = (CDebug* )hinst;
-
-    //DbgTraceEvent event(pDebug);
-    //QApplication::sendEvent(m_pWndMain.data(), &event);
-    //m_pWndMain->AddTraceMsg(str, MSGLEVEL_NORMAL);
+    // Трассировочные сообщения в UI больше не выводятся (встроенный
+    // интерфейс удалён), колбэк оставлен для совместимости с dbgintf.
+    Q_UNUSED(hinst);
+    Q_UNUSED(str);
 }
 
 CDebug *Rsldbg::currentDebug()
 {
-    return m_pWndMain->m_curdbg;
+    return m_CurDbg;
 }
 
 void Rsldbg::stoploop()
@@ -322,18 +310,12 @@ void Rsldbg::remModule(HDBG hinst, RSLMODULE hmod)
 
 void Rsldbg::done_ui()
 {
-    //if  (!m_pWndMain.empty())
 }
 
 bool Rsldbg::init_ui()
 {
     done_ui();
     m_ActiveBeforeDbg = GetForegroundWindow();
-
-    //m_pWndMain.reset(new MainWindow());
-    //m_pWndMain->moveToThread(m_Thread.data());
-    //m_pWndMain->setWindowModality(Qt::ApplicationModal);
-    //QObject::connect(m_pWndMain.data(), &MainWindow::closed, &m_EventLoop, &QEventLoop::quit);
 
     return true;
 }
@@ -463,4 +445,13 @@ extern "C" __declspec(dllexport)
 TRslDbg *RSDBG RslGetInterface (void)
 {
     return &dbgInterface;
+}
+
+// Программное переключение режима клиента (перекрывает rsldbg.ini):
+// 0 = gui (локальный GUI), 1 = agent, 2 = gui_remote.
+// Можно вызывать из хост-приложения/скрипта до срабатывания debugbreak.
+extern "C" __declspec(dllexport)
+void RSDBG RslDbgSetClientMode (int mode)
+{
+    dbgSetClientMode(DbgClientMode(mode));
 }

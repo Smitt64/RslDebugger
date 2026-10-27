@@ -8,5 +8,6 @@
         <file>highlighter/sql_keys.txt</file>
         <file alias="VisualStudioDark">syntaxhighlighter/Visual Studio (Dark).json</file>
         <file alias="VisualStudioLight">syntaxhighlighter/Visual Studio (Light).json</file>
+        <file alias="RSBankHighlighterStyle">syntaxhighlighter/RS-Bank.json</file>
     </qresource>
 </RCC>

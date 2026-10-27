@@ -23,7 +23,6 @@ typedef Qt::HANDLE(*tRslModuleForStatement)(Qt::HANDLE);
 typedef void (*tRslGetStatementPos)(Qt::HANDLE, int *offs, int *len);
 //typedef void(*tRslGetStatementPosEx)(Qt::HANDLE, int *offs, int *len, int *line);
 
-class MainWindow;
 class QApplication;
 class QLibrary;
 class CDebug;
@@ -70,7 +69,7 @@ private:
 
     QEventLoop m_EventLoop;
 
-    QScopedPointer<MainWindow> m_pWndMain;
+    CDebug *m_CurDbg;
     QScopedPointer<QLibrary> m_RsLeng;
     QScopedPointer<QThread> m_Thread;
 };

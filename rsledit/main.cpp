@@ -3,6 +3,8 @@
 #include <cstdio>
 
 #include <QApplication>
+#include <QDir>
+#include <QFileInfo>
 
 #include "mainwindow.h"
 #include "macrorunner.h"
@@ -64,7 +66,39 @@ int main(int argc, char *argv[])
         return runHeadless(fileName, debug);
     }
 
-    MainWindow window;
+    // Файл для автооткрытия: позиционный аргумент либо hello.mac из репозитория.
+    // exe лежит в rsledit/debug (сборка) или в bin (установка), поэтому
+    // проверяем несколько относительных путей.
+    QString startFile;
+    for (int i = 1; i < args.count(); ++i)
+    {
+        if (!args.at(i).startsWith(QLatin1Char('-')))
+        {
+            startFile = args.at(i);
+            break;
+        }
+    }
+
+    if (startFile.isEmpty())
+    {
+        const QString appDir = app.applicationDirPath();
+        const QStringList candidates = {
+            appDir + QStringLiteral("/test/hello.mac"),          // bin/test/hello.mac
+            appDir + QStringLiteral("/../bin/test/hello.mac"),
+            appDir + QStringLiteral("/../../bin/test/hello.mac") // rsledit/debug -> repo/bin
+        };
+
+        for (const QString &path : candidates)
+        {
+            if (QFileInfo::exists(path))
+            {
+                startFile = QDir(path).canonicalPath();
+                break;
+            }
+        }
+    }
+
+    MainWindow window(startFile);
     window.show();
 
     return app.exec();

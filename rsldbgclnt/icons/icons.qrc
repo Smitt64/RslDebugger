@@ -20,5 +20,6 @@
         <file>vswin2019/objects/Variable.svg</file>
         <file>vswin2019/objects/Childs.svg</file>
         <file>vswin2019/objects/Undefined.svg</file>
+        <file>vswin2019/apps/AppLogo.svg</file>
     </qresource>
 </RCC>

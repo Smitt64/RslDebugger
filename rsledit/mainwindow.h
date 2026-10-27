@@ -12,6 +12,7 @@ class MainWindow : public QMainWindow
 
 public:
     MainWindow(QWidget *parent = nullptr);
+    MainWindow(const QString &startFile, QWidget *parent = nullptr);
 
 protected:
     void closeEvent(QCloseEvent *event) Q_DECL_OVERRIDE;

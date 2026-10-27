@@ -1,7 +1,9 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include "dbgserverbase.h"
+#include "dbgannouncer.h"
 #include "serveractionevent.h"
+#include "../dbgsettings.h"
 #include <QThread>
 #include <QProcess>
 #include <QNetworkInterface>
@@ -11,11 +13,39 @@
 #include <QStack>
 #include <QMutexLocker>
 #include <QDataStream>
-
-#define DEFAULT_PORT 1491
-static int max_port = DEFAULT_PORT;
+#include <QUuid>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 Q_LOGGING_CATEGORY(dbgServer, "rsldbg.server")
+
+// Копирование строки в буфер обмена через Win32: run() выполняется в рабочем
+// потоке, а QClipboard доступен только из GUI-потока.
+static void copyToClipboard(const QString &text)
+{
+    if (!OpenClipboard(NULL))
+        return;
+
+    EmptyClipboard();
+
+    const QString wide = text;
+    const int bytes = (wide.length() + 1) * int(sizeof(wchar_t));
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (hMem)
+    {
+        void *dst = GlobalLock(hMem);
+        if (dst)
+        {
+            memcpy(dst, wide.utf16(), bytes);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        }
+        else
+            GlobalFree(hMem);
+    }
+
+    CloseClipboard();
+}
 
 DbgServerBase::DbgServerBase(QObject *parent)
     : QObject{parent},
@@ -24,6 +54,7 @@ DbgServerBase::DbgServerBase(QObject *parent)
     //prevStack = 0;
     //newDbg = true;
     ClientSocket = INVALID_SOCKET;
+    m_Port = 0;
     oem866 = QTextCodec::codecForName("IBM 866");
 
     m_finishedFlag.storeRelease(0);
@@ -108,12 +139,19 @@ void DbgServerBase::run()
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
-    hints.ai_flags = AI_PASSIVE;
 
-    char port[_MAX_PATH] = {'\0'};
-    m_Port = ++max_port;
-    sprintf(port, "%d", m_Port);
-    iResult = getaddrinfo(NULL, port, &hints, &result);
+    const DbgSettings settings = dbgSettings();
+
+    // gui_remote слушает на всех интерфейсах, локальные режимы - только loopback.
+    const char *bindNode = nullptr;
+    if (settings.clientMode == DbgClientGuiRemote)
+        hints.ai_flags = AI_PASSIVE;
+    else
+        bindNode = "127.0.0.1";
+
+    // Порт 0 - свободный порт выделяет ОС. Фикс коллизии: раньше все процессы
+    // начинали с 1492 (++max_port статичен только внутри одного процесса).
+    iResult = getaddrinfo(bindNode, "0", &hints, &result);
 
     if ( iResult != 0 )
     {
@@ -152,10 +190,17 @@ void DbgServerBase::run()
         emit finished();
         return;
     }
-    else
-        qInfo(dbgServer()) << "Server binds to" << ipAddress;
 
     freeaddrinfo(result);
+
+    // Реальный порт, выданный ОС.
+    {
+        sockaddr_in bound = {};
+        int boundLen = sizeof(bound);
+        if (getsockname(ListenSocket, (sockaddr*)&bound, &boundLen) == 0)
+            m_Port = ntohs(bound.sin_port);
+    }
+    qInfo(dbgServer()) << "Server binds to" << ipAddress << "port" << m_Port;
 
     iResult = listen(ListenSocket, SOMAXCONN);
     if (iResult == SOCKET_ERROR)
@@ -169,39 +214,91 @@ void DbgServerBase::run()
         return;
     }
 
-    if (!startApp())
-    {
-        m_LastError = QString("Can't start debug app");
-        qCritical(dbgServer()) << m_LastError;
+    // Токен опционален: без auth_token в ini локальным клиентам (127.0.0.1)
+    // достаточно самого кадра DBG_REQUEST_AUTH - он и есть "привет, я клиент".
+    // Для gui_remote (0.0.0.0) без явного токена генерируем случайный -
+    // слушать всю сеть совсем без защиты нельзя.
+    if (!settings.authToken.isEmpty())
+        m_Token = settings.authToken;
+    else if (settings.clientMode == DbgClientGuiRemote)
+        m_Token = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
-        closesocket(ListenSocket);
-        WSACleanup();
-        emit finished();
-        return;
+    // URI подключения (как токен бота в Telegram): показываем пользователю
+    // в логе и кладём в буфер обмена - вставил в конфиг клиента/MCP и готово.
+    if (settings.clientMode != DbgClientGui)
+    {
+        QString uri = QStringLiteral("rsldbg://%1:%2")
+                          .arg(settings.clientMode == DbgClientGuiRemote
+                                   ? QHostInfo::localHostName()
+                                   : QStringLiteral("127.0.0.1"))
+                          .arg(m_Port);
+        if (!m_Token.isEmpty())
+            uri += QStringLiteral("?token=") + m_Token;
+
+        qWarning(dbgServer()) << "Debug session URI:" << uri;
+        copyToClipboard(uri);
     }
 
-    ClientSocket = accept(ListenSocket, NULL, NULL);
-    /*int WaitCount = 0;
-    do {
-        QThread::sleep(5);
-        ClientSocket = accept(ListenSocket, (SOCKADDR*)&result->ai_addr, (int*)&result->ai_addrlen);
-        qDebug() << "Waiting connection";
-        WaitCount ++;
-
-        if (ClientSocket != INVALID_SOCKET)
-            WaitCount = 10;
-    } while (ClientSocket == SOCKET_ERROR && WaitCount < 10);*/
-
-    if (ClientSocket == INVALID_SOCKET)
+    // В локальном gui-режиме сервер сам запускает клиента. В agent/gui_remote
+    // клиент подключается сам (по анонсам) - рассылаем UDP heartbeat.
+    if (settings.clientMode == DbgClientGui)
     {
-        m_LastError = QString("accept failed with error: %1").arg(WSAGetLastError());
-        qCritical(dbgServer()) << m_LastError;
+        if (!startApp())
+        {
+            m_LastError = QString("Can't start debug app");
+            qCritical(dbgServer()) << m_LastError;
 
-        closesocket(ListenSocket);
-        WSACleanup();
-        emit finished();
-        return;
+            closesocket(ListenSocket);
+            WSACleanup();
+            emit finished();
+            return;
+        }
     }
+    else if (settings.announceBroadcast || !settings.announceTo.isEmpty())
+    {
+        m_Announcer.reset(new DbgAnnouncer());
+        m_Announcer->start((quint16)m_Port);
+    }
+
+    // accept с авторизацией: при неверном токене закрываем соединение и
+    // возвращаемся к accept - один неверный клиент не должен убивать сессию.
+    for (;;)
+    {
+        ClientSocket = accept(ListenSocket, NULL, NULL);
+
+        if (ClientSocket == INVALID_SOCKET)
+        {
+            m_LastError = QString("accept failed with error: %1").arg(WSAGetLastError());
+            qCritical(dbgServer()) << m_LastError;
+
+            closesocket(ListenSocket);
+            WSACleanup();
+            emit finished();
+            return;
+        }
+
+        // Таймаут на авторизацию: случайный скан порта не вешает сессию.
+        DWORD authTimeout = 10000;
+        setsockopt(ClientSocket, SOL_SOCKET, SO_RCVTIMEO,
+                   (const char*)&authTimeout, sizeof(authTimeout));
+
+        if (waitAuth())
+            break;
+
+        qInfo(dbgServer()) << "Client auth failed or timed out, back to accept";
+        shutdown(ClientSocket, SD_BOTH);
+        closesocket(ClientSocket);
+        ClientSocket = INVALID_SOCKET;
+    }
+
+    // Авторизованный клиент подключён: анонсы больше не нужны.
+    if (m_Announcer)
+        m_Announcer->stop();
+
+    // Снимаем таймаут авторизации.
+    DWORD noTimeout = 0;
+    setsockopt(ClientSocket, SOL_SOCKET, SO_RCVTIMEO,
+               (const char*)&noTimeout, sizeof(noTimeout));
 
     closesocket(ListenSocket);
     qInfo(dbgServer()) << "Client connected (accepted), port" << m_Port;
@@ -211,16 +308,6 @@ void DbgServerBase::run()
     u_long nonBlock = 1;
     ioctlsocket(ClientSocket, FIONBIO, &nonBlock);
 
-    DBGHEADER handshake;
-    DbgMakeHeader(&handshake, sizeof(DBGHEADER) + sizeof(DBG_HANDSHAKE), DBG_REQUEST_HANDSHAKE);
-
-    DBG_HANDSHAKE hs;
-    hs.version = RSLDBG_PROTOCOL_VERSION;
-
-    QByteArray packet;
-    packet.append((char*)&handshake, sizeof(DBGHEADER));
-    packet.append((char*)&hs, sizeof(DBG_HANDSHAKE));
-    send(ClientSocket, packet.data(), packet.size(), 0);
     emit started();
 
     QByteArray buffer;
@@ -322,6 +409,83 @@ void DbgServerBase::run()
     closesocket(ClientSocket);
     WSACleanup();
     emit finished();
+}
+
+int DbgServerBase::recvAll(char *dst, int size)
+{
+    // Блокирующее чтение ровно size байт (используется только в фазе
+    // авторизации, пока сокет ещё блокирующий, с выставленным SO_RCVTIMEO).
+    int got = 0;
+    while (got < size)
+    {
+        int r = recv(ClientSocket, dst + got, size - got, 0);
+        if (r <= 0)
+            return r;
+        got += r;
+    }
+
+    return got;
+}
+
+bool DbgServerBase::waitAuth()
+{
+    // handshake
+    DBGHEADER handshake;
+    DbgMakeHeader(&handshake, sizeof(DBGHEADER) + sizeof(DBG_HANDSHAKE), DBG_REQUEST_HANDSHAKE);
+
+    DBG_HANDSHAKE hs;
+    hs.version = RSLDBG_PROTOCOL_VERSION;
+
+    QByteArray packet;
+    packet.append((char*)&handshake, sizeof(DBGHEADER));
+    packet.append((char*)&hs, sizeof(DBG_HANDSHAKE));
+    if (send(ClientSocket, packet.data(), packet.size(), 0) == SOCKET_ERROR)
+        return false;
+
+    // Ожидаем DBG_REQUEST_AUTH {"token": "..."} (SO_RCVTIMEO=10с выставлен
+    // вызывающим кодом).
+    DBGHEADER hdr;
+    if (recvAll((char*)&hdr, sizeof(hdr)) <= 0)
+        return false;
+
+    // NB: асимметрия протокола - клиент в hdr.size кладёт размер ТОЛЬКО
+    // payload (см. DbgClient::write), главный цикл ниже тоже ждёт payload-only.
+    const int payload = hdr.size;
+    if (!DbgCheckHeader(&hdr) || hdr.action != DBG_REQUEST_AUTH ||
+        payload <= 0 || payload > 4096)
+        return false;
+
+    QByteArray body(payload, 0);
+    if (recvAll(body.data(), payload) <= 0)
+        return false;
+
+    const QJsonObject obj = QJsonDocument::fromJson(body).object();
+
+    // Токен не настроен -> авторизуем любого, кто прислал корректный
+    // кадр DBG_REQUEST_AUTH (локальный listen на 127.0.0.1).
+    const bool ok = m_Token.isEmpty() ||
+                    obj.value(QStringLiteral("token")).toString() == m_Token;
+
+    qInfo(dbgServer()) << "Auth request from client"
+                       << obj.value(QStringLiteral("client")).toString()
+                       << "token ok:" << ok;
+
+    QJsonObject reply;
+    reply.insert(QStringLiteral("ok"), ok);
+    if (!ok)
+        reply.insert(QStringLiteral("error"), QStringLiteral("Invalid auth token"));
+
+    const QByteArray replyJson = QJsonDocument(reply).toJson(QJsonDocument::Compact);
+
+    DBGHEADER rhdr;
+    DbgMakeHeader(&rhdr, int(sizeof(DBGHEADER)) + replyJson.size(), DBG_REQUEST_AUTH);
+
+    QByteArray rpacket;
+    rpacket.append((char*)&rhdr, sizeof(DBGHEADER));
+    rpacket.append(replyJson);
+    send(ClientSocket, rpacket.data(), rpacket.size(), 0);
+
+    return ok;
 }
 
 bool DbgServerBase::startApp()

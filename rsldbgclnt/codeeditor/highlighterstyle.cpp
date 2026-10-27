@@ -585,6 +585,7 @@ HighlighterStyle::HighlighterStyle() :
     d->loadStaticStyle(":/DefaultHighlighterStyle", "Default");
     d->loadStaticStyle(":/VisualStudioLight", "Visual Studio (Light)");
     d->loadStaticStyle(":/VisualStudioDark", "Visual Studio (Dark)");
+    d->loadStaticStyle(":/RSBankHighlighterStyle", "RS-Bank");
 
     d->loadStyles();
 }

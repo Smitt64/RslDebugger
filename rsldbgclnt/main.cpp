@@ -98,9 +98,13 @@ int main(int argc, char *argv[])
     QCommandLineOption portOption(QStringList() << "p" << "port",
                                   QCoreApplication::translate("main", "port to connect <port>."),
                                   QCoreApplication::translate("main", "port"));
+    QCommandLineOption tokenOption(QStringList() << "token",
+                                   QCoreApplication::translate("main", "auth token <token> (иначе читается из session-файла)."),
+                                   QCoreApplication::translate("main", "token"));
 
     parser.addOption(hostOption);
     parser.addOption(portOption);
+    parser.addOption(tokenOption);
     parser.process(a);
     //qCritical(dbg()) << "test";
 
@@ -112,7 +116,9 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    if (!pMainWindow->connectToHost(parser.value(hostOption), parser.value(portOption).toShort()))
+    // toUShort: OS выдаёт эфемерные порты >32767, toShort() на них давал бы 0.
+    if (!pMainWindow->connectToHost(parser.value(hostOption), parser.value(portOption).toUShort(),
+                                    parser.value(tokenOption)))
     {
         QMessageBox::critical(nullptr, QCoreApplication::translate("main", "Error"),
                               pMainWindow->lastError());

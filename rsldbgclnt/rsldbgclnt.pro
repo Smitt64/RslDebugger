@@ -12,12 +12,15 @@ OBJECTS_DIR = build
 RCC_DIR = build
 
 SOURCES += \
+    ../3rdparty/SARibbon/SARibbon.cpp \
     callstackdockwidget.cpp \
+    dbgclient.cpp \
     dbgeditorlinewidgetprovider.cpp \
     finddialog.cpp \
     logevent.cpp \
     main.cpp \
     mainwindow.cpp \
+    windowtitlebar.cpp \
     models/callstackmodel.cpp \
     models/logeventmodel.cpp \
     models/varwatchmodel.cpp \
@@ -33,8 +36,10 @@ SOURCES += \
     codeeditor/highlighterstyle.cpp
 
 HEADERS += \
+    ../3rdparty/SARibbon/SARibbon.h \
     ../rsldbg/dbgserverproto.h \
     callstackdockwidget.h \
+    dbgclient.h \
     dbgeditorlinewidgetprovider.h \
     finddialog.h \
     itemviewiconstyle.h \
@@ -46,6 +51,7 @@ HEADERS += \
     stdviewdockwidget.h \
     varwatchdlg.h \
     varwatchdockwidget.h \
+    windowtitlebar.h \
     codeeditor/codeeditor.h \
     codeeditor/codehighlighter.h \
     codeeditor/cppcodehighlighter.h \
@@ -63,10 +69,14 @@ RESOURCES += \
     res.qrc \
     codeeditor.qrc
 
+win32:RC_FILE += rsldbgclnt.rc
+
 INCLUDEPATH += $$PWD
 INCLUDEPATH += $$PWD/../rsldbg
+INCLUDEPATH += $$PWD/../3rdparty/SARibbon
 
 LIBS += -lUser32
+LIBS += -lDwmapi
 
 target.path = $$PWD/../bin
 INSTALLS += target

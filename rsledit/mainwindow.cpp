@@ -18,6 +18,11 @@
 #include <QTextStream>
 
 MainWindow::MainWindow(QWidget *parent)
+    : MainWindow(QString(), parent)
+{
+}
+
+MainWindow::MainWindow(const QString &startFile, QWidget *parent)
     : QMainWindow(parent),
       m_running(false)
 {
@@ -46,6 +51,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     setCurrentFile(QString());
     resize(900, 700);
+
+    // Для удобства тестирования: при старте сразу открываем файл
+    // (по умолчанию main.cpp подставляет bin/test/hello.mac)
+    if (!startFile.isEmpty())
+        loadFile(startFile);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
