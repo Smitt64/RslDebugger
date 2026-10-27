@@ -209,8 +209,6 @@ int Rsldbg::DbgBreak(HDBG hDBG, uint32 data)
             return FALSE;
     }
 
-    qDebug() << "DbgBreak";
-
     return process(hDBG, bp);
 }
 
@@ -239,10 +237,15 @@ int Rsldbg::process(HDBG hDBG, TBpData *data)
             result = 0;
     }
 
-    //srv->UpdateDbgInfo(data);
+    // ВАЖНО: DbgBreak - колбэк рантайма, и пока мы внутри него, вызывать
+    // API рантайма (do_GetVersion, EnumStack и т.п.) из серверного потока
+    // НЕЛЬЗЯ - рантайм держит внутреннюю блокировку, вызовы повисают
+    // (проверено: серверный поток встаёт в CDebug::GetRemoteVersion).
+    // Паузу после останова делает сам рантайм: DbgBreak только публикует
+    // события и возвращается, а рантайм ждёт ExecContinue, который придёт
+    // из серверного потока по команде клиента (EXECCONTNUE).
     srv->sendServerAction(new UpdateDbgInfoEvent(data));
     srv->sendServerAction(new BreakPointEvent(data));
-    //srv->sendEventBreakPoint(data);
 
     return result;
 }

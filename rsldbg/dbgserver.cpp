@@ -422,21 +422,30 @@ void DbgServer::ShowVariableValue(const qint64 &val, const qint64 &info)
     RSLVALUE v  = NULL;
     m_curdbg->do_GetValueSize(reinterpret_cast<RSLVINFO>(info), &size);
 
+    QByteArray value;
     if (size)
     {
-        char *value = new char[size + 1];
-        memset(value, 0, size + 1);
-        m_curdbg->do_GetValueData(reinterpret_cast<RSLVINFO>(info), value, size + 1, 0, &size);
-        m_curdbg->do_RefreshInfo(reinterpret_cast<RSLVINFO>(info), &v, NULL, str_name, MAX_NAME, str_type, MAX_TYPENAME, str_value, MAX_VALUE);
-
-        QJsonObject root;
-        root["name"] = codec->toUnicode(str_name);
-        root["type"] = codec->toUnicode(str_type);
-        root["value"] = codec->toUnicode(QByteArray(value, size));
-
-        write(DBG_REQUEST_GETVALUENFO_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
-        delete[] value;
+        char *buf = new char[size + 1];
+        memset(buf, 0, size + 1);
+        m_curdbg->do_GetValueData(reinterpret_cast<RSLVINFO>(info), buf, size + 1, 0, &size);
+        value = QByteArray(buf, size);
+        delete[] buf;
     }
+
+    m_curdbg->do_RefreshInfo(reinterpret_cast<RSLVINFO>(info), &v, NULL,
+                             str_name, MAX_NAME, str_type, MAX_TYPENAME,
+                             str_value, MAX_VALUE);
+
+    // Отвечаем всегда, иначе клиент ждёт кадр до таймаута: для объектов
+    // do_GetValueSize возвращает 0 и сырых данных нет, но строковое
+    // представление (str_value) RefreshInfo всё равно даёт.
+    QJsonObject root;
+    root["name"] = codec->toUnicode(str_name);
+    root["type"] = codec->toUnicode(str_type);
+    root["value"] = size ? codec->toUnicode(value)
+                         : codec->toUnicode(str_value);
+
+    write(DBG_REQUEST_GETVALUENFO_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
 int DbgServer::RslGetModuleLine(Qt::HANDLE module, int offs, int len)
@@ -482,6 +491,19 @@ bool DbgServer::serverActionEvent(ServerActionEvent *e)
     }
 
     return DbgServerBase::serverActionEvent(e);
+}
+
+void DbgServer::clientDisconnected()
+{
+    // Клиент ушёл, не сняв программу с паузы: интерпретатор ждёт
+    // ExecContinue и без него ведущее приложение зависнет навсегда.
+    // Режим abort - то же, что клиент шлёт из DbgClient::stop().
+    if (m_curdbg && m_curdbg->GetDebugState())
+    {
+        qInfo(dbgServer()) << "Client disconnected while paused, aborting execution";
+        m_curdbg->SetDebugState(false);
+        m_curdbg->do_ExecContinue(EXECCONTNUE_DBG_ABORT);
+    }
 }
 
 bool DbgServer::serverEvent(QEvent *event)

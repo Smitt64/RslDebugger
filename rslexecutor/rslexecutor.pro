@@ -1,13 +1,13 @@
-# Статическая библиотека: перенос RslExecutor (+ каталог rsscript) из
-# RsWorkTools/ToolsRuntime. toolsruntime.h/.cpp здесь - минимальный аналог
-# оригинального (только logRsl и toolFullFileNameFromDir).
+# РЎС‚Р°С‚РёС‡РµСЃРєР°СЏ Р±РёР±Р»РёРѕС‚РµРєР°: РїРµСЂРµРЅРѕСЃ RslExecutor (+ РєР°С‚Р°Р»РѕРі rsscript) РёР·
+# RsWorkTools/ToolsRuntime. toolsruntime.h/.cpp Р·РґРµСЃСЊ - РјРёРЅРёРјР°Р»СЊРЅС‹Р№ Р°РЅР°Р»РѕРі
+# РѕСЂРёРіРёРЅР°Р»СЊРЅРѕРіРѕ (С‚РѕР»СЊРєРѕ logRsl Рё toolFullFileNameFromDir).
 QT += core gui widgets testlib
 
 TEMPLATE = lib
 
 CONFIG += staticlib c++17
 
-# Статическая линковка: отключает Q_DECL_EXPORT/IMPORT.
+# РЎС‚Р°С‚РёС‡РµСЃРєР°СЏ Р»РёРЅРєРѕРІРєР°: РѕС‚РєР»СЋС‡Р°РµС‚ Q_DECL_EXPORT/IMPORT.
 DEFINES += TOOLSRUNTIME_STATIC_LINK Q_WS_WIN
 
 UI_DIR = build

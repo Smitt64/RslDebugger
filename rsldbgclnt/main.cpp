@@ -99,7 +99,7 @@ int main(int argc, char *argv[])
                                   QCoreApplication::translate("main", "port to connect <port>."),
                                   QCoreApplication::translate("main", "port"));
     QCommandLineOption tokenOption(QStringList() << "token",
-                                   QCoreApplication::translate("main", "auth token <token> (иначе читается из session-файла)."),
+                                   QCoreApplication::translate("main", "auth token <token> (otherwise read from session file)."),
                                    QCoreApplication::translate("main", "token"));
 
     parser.addOption(hostOption);
@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
     if (!parser.isSet(hostOption) || !parser.isSet(portOption))
     {
         QMessageBox::critical(nullptr, QCoreApplication::translate("main", "Error"),
-                              QCoreApplication::translate("main", "Сonnection parameters not specified"));
+                              QCoreApplication::translate("main", "Connection parameters not specified"));
         a.quit();
         return -1;
     }

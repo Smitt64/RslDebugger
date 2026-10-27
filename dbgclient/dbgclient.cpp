@@ -116,7 +116,7 @@ bool DbgClient::connectToHost(const QString &hostName, quint16 port)
 
     if (m_ProtocolVersion < RSLDBG_PROTOCOL_VERSION)
     {
-        setError(QStringLiteral("Устаревший rsldbg.dll: протокол v%1, требуется v%2. Пересоберите сервер.")
+        setError(QStringLiteral("Outdated rsldbg.dll: protocol v%1, v%2 required. Rebuild the server.")
                      .arg(m_ProtocolVersion).arg(RSLDBG_PROTOCOL_VERSION));
         m_pSocket->disconnectFromHost();
         return false;
@@ -174,7 +174,7 @@ bool DbgClient::authenticate()
 
     if (headerdata.size() != sizeof(DBGHEADER))
     {
-        setError(QStringLiteral("Нет ответа авторизации от сервера"));
+        setError(QStringLiteral("No auth reply from server"));
         return false;
     }
 
@@ -183,7 +183,7 @@ bool DbgClient::authenticate()
     if (!DbgCheckHeader(hdr) || hdr->action != DBG_REQUEST_AUTH ||
         payloadSize <= 0 || payloadSize > 4096)
     {
-        setError(QStringLiteral("Некорректный ответ авторизации от сервера"));
+        setError(QStringLiteral("Invalid auth reply from server"));
         return false;
     }
 
@@ -200,7 +200,7 @@ bool DbgClient::authenticate()
     if (!reply.value(QStringLiteral("ok")).toBool())
     {
         setError(reply.value(QStringLiteral("error")).toString(
-            QStringLiteral("Сервер отклонил токен авторизации")));
+            QStringLiteral("Server rejected the auth token")));
         return false;
     }
 

@@ -405,6 +405,10 @@ void DbgServerBase::run()
         }
     } while (!stop);
 
+    // Клиент отключился, не прислав ExecContinue: интерпретатор мог
+    // остаться на паузе после DbgBreak - снимаем его (см. DbgServer).
+    clientDisconnected();
+
     iResult = shutdown(ClientSocket, SD_SEND);
     closesocket(ClientSocket);
     WSACleanup();
@@ -521,4 +525,8 @@ bool DbgServerBase::serverActionEvent(ServerActionEvent *e)
 {
     qDebug() << "DbgServerBase::serverActionEvent";
     return false;
+}
+
+void DbgServerBase::clientDisconnected()
+{
 }

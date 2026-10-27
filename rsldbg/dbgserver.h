@@ -30,6 +30,7 @@ protected:
     virtual bool startApp() Q_DECL_OVERRIDE;
     virtual bool serverActionEvent(ServerActionEvent *e) Q_DECL_OVERRIDE;
     virtual bool serverEvent(QEvent *e) Q_DECL_OVERRIDE;
+    virtual void clientDisconnected() Q_DECL_OVERRIDE;
 
 signals:
     void finished();

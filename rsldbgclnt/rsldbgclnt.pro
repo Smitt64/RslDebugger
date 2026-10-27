@@ -14,7 +14,6 @@ RCC_DIR = build
 SOURCES += \
     ../3rdparty/SARibbon/SARibbon.cpp \
     callstackdockwidget.cpp \
-    dbgclient.cpp \
     dbgeditorlinewidgetprovider.cpp \
     finddialog.cpp \
     logevent.cpp \
@@ -39,7 +38,6 @@ HEADERS += \
     ../3rdparty/SARibbon/SARibbon.h \
     ../rsldbg/dbgserverproto.h \
     callstackdockwidget.h \
-    dbgclient.h \
     dbgeditorlinewidgetprovider.h \
     finddialog.h \
     itemviewiconstyle.h \
@@ -73,10 +71,17 @@ win32:RC_FILE += rsldbgclnt.rc
 
 INCLUDEPATH += $$PWD
 INCLUDEPATH += $$PWD/../rsldbg
+INCLUDEPATH += $$PWD/../dbgclient
 INCLUDEPATH += $$PWD/../3rdparty/SARibbon
 
 LIBS += -lUser32
 LIBS += -lDwmapi
+
+# РљР»РёРµРЅС‚ РѕС‚Р»Р°РґРѕС‡РЅРѕРіРѕ РїСЂРѕС‚РѕРєРѕР»Р° (СЃС‚Р°С‚РёС‡РµСЃРєР°СЏ Р±РёР±Р»РёРѕС‚РµРєР°).
+win32:CONFIG(release, debug|release): LIBS += -L$$OUT_PWD/../dbgclient/release/ -ldbgclient
+else:win32:CONFIG(debug, debug|release): LIBS += -L$$OUT_PWD/../dbgclient/debug/ -ldbgclient
+win32:CONFIG(release, debug|release): PRE_TARGETDEPS += $$OUT_PWD/../dbgclient/release/dbgclient.lib
+else:win32:CONFIG(debug, debug|release): PRE_TARGETDEPS += $$OUT_PWD/../dbgclient/debug/dbgclient.lib
 
 target.path = $$PWD/../bin
 INSTALLS += target

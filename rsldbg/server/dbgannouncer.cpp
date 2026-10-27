@@ -39,7 +39,13 @@ BOOL CALLBACK enumWndProc(HWND hwnd, LPARAM lParam)
     if (pid != ctx->pid || !IsWindowVisible(hwnd))
         return TRUE;
 
-    if (GetWindowTextW(hwnd, ctx->title, 255) > 0)
+    // НЕ GetWindowTextW: он шлёт WM_GETTEXT и ждёт ответа UI-потока, который
+    // во время debugbreak заблокирован в ожидании клиента - анонсер бы
+    // завис навсегда. SendMessageTimeoutW с SMTO_ABORTIFHUNG не ждёт.
+    DWORD_PTR res = 0;
+    if (SendMessageTimeoutW(hwnd, WM_GETTEXT, 255,
+                            reinterpret_cast<LPARAM>(ctx->title),
+                            SMTO_ABORTIFHUNG | SMTO_BLOCK, 300, &res) && res > 0)
         return FALSE; // нашли - хватит
 
     return TRUE;

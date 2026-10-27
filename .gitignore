@@ -72,3 +72,9 @@ dumps/
 
 loki/debug/
 rslexecutor/debug/
+
+dbgclient/debug/
+dbgclient/release/
+rsldbgmcp/debug/
+rsldbgmcp/release/
+__pycache__/

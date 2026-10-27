@@ -47,6 +47,11 @@ protected:
     virtual bool serverEvent(QEvent *e);
     virtual bool serverActionEvent(ServerActionEvent *e);
 
+    // Вызывается из run() после обрыва соединения с клиентом. Потомок
+    // должен снять программу с паузы (abort), если отладка ещё активна,
+    // иначе интерпретатор останется подвешенным в ожидании ExecContinue.
+    virtual void clientDisconnected();
+
     void write(qint16 action, const QByteArray &data);
 
 protected:
