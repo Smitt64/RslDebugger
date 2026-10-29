@@ -251,15 +251,25 @@ QJsonArray McpServer::toolsList() const
 
     tools.append(tool(QStringLiteral("rsl_continue"),
         QStringLiteral("Execution control: run, step_over, step_into, step_out, abort. "
-                       "After calling, use rsl_wait_event to wait for the stop."),
+                       "With wait=true (recommended) also waits for the next stop and returns "
+                       "the event snapshot in one call - saves a separate rsl_wait_event round trip."),
         objectSchema({{QStringLiteral("mode"),
                        schemaProp(QStringLiteral("string"),
-                                  QStringLiteral("run | step_over | step_into | step_out | abort"))}},
+                                  QStringLiteral("run | step_over | step_into | step_out | abort"))},
+                      {QStringLiteral("wait"),
+                       schemaProp(QStringLiteral("boolean"),
+                                  QStringLiteral("Wait for the next stop and return its snapshot (default false)"))},
+                      {QStringLiteral("timeout_ms"),
+                       schemaProp(QStringLiteral("integer"),
+                                  QStringLiteral("Wait timeout when wait=true, ms (default 30000)"))}},
                      QJsonArray{QStringLiteral("mode")})));
 
     tools.append(tool(QStringLiteral("rsl_wait_event"),
         QStringLiteral("Wait for a debugger event (stop, line change, termination) "
-                       "and return a snapshot: event, source (without full text), frames, vars."),
+                       "and return a snapshot: event, source (without full text), vars, "
+                       "frames_count/vars_count (call rsl_stack for the full call stack). "
+                       "If the debugger is already stopped and no rsl_continue was sent since, "
+                       "returns the current snapshot immediately - call it once after each rsl_continue."),
         objectSchema({{QStringLiteral("timeout_ms"),
                        schemaProp(QStringLiteral("integer"),
                                   QStringLiteral("Wait timeout, ms (default 30000)"))}})));
@@ -277,8 +287,12 @@ QJsonArray McpServer::toolsList() const
         objectSchema({})));
 
     tools.append(tool(QStringLiteral("rsl_source"),
-        QStringLiteral("Current source module: filename, line, offs, len, full text."),
-        objectSchema({})));
+        QStringLiteral("Current source module: filename, line, offs, len, text. "
+                       "By default returns the full text; pass context to get "
+                       "only +/- N lines around the current line."),
+        objectSchema({{QStringLiteral("context"),
+                       schemaProp(QStringLiteral("integer"),
+                                  QStringLiteral("If set, return only +/- N lines around the current line"))}})));
 
     tools.append(tool(QStringLiteral("rsl_expand_variable"),
         QStringLiteral("Expand an object variable (child fields). Returns "
@@ -374,7 +388,17 @@ QJsonObject McpServer::callTool(const QString &name, const QJsonObject &args)
         if (!modes.contains(mode))
             return toolError(QStringLiteral("Unknown mode: %1 (run, step_over, step_into, step_out, abort)").arg(mode));
 
+        m_Dbg->notifyContinueSent();
         m_Dbg->execContinue(modes.value(mode));
+
+        // wait=true: один tool call вместо пары rsl_continue + rsl_wait_event -
+        // экономим целый MCP-раундтрип (модельное время дороже сетевого).
+        if (args.value(QStringLiteral("wait")).toBool())
+        {
+            const int timeout = args.value(QStringLiteral("timeout_ms")).toInt(30000);
+            return toolText(QJsonDocument(m_Dbg->waitEvent(timeout)));
+        }
+
         return toolText(QJsonDocument(QJsonObject{{QStringLiteral("sent"), mode}}));
     }
 
@@ -417,7 +441,31 @@ QJsonObject McpServer::callTool(const QString &name, const QJsonObject &args)
         const QString err = requireConnected();
         if (!err.isEmpty())
             return toolError(err);
-        return toolText(QJsonDocument(m_Dbg->source()));
+
+        QJsonObject src = m_Dbg->source();
+
+        // context: отдать только окрестность текущей строки, а не весь модуль
+        const QJsonValue ctx = args.value(QStringLiteral("context"));
+        if (ctx.isDouble() && src.contains(QStringLiteral("text")))
+        {
+            const int context = ctx.toInt();
+            QString text = src.value(QStringLiteral("text")).toString();
+
+            QStringList lines = text.split(QStringLiteral("\r\n"));
+            if (lines.size() <= 1)
+                lines = text.split(QLatin1Char('\n'));
+
+            const int cur = src.value(QStringLiteral("line")).toInt(); // 1-based
+            const int from = qMax(0, cur - 1 - context);
+            const int to = qMin(lines.size(), cur + context); // exclusive
+
+            src.insert(QStringLiteral("from_line"), from + 1);
+            src.insert(QStringLiteral("to_line"), to);
+            src.insert(QStringLiteral("text"),
+                       lines.mid(from, to - from).join(QStringLiteral("\r\n")));
+        }
+
+        return toolText(QJsonDocument(src));
     }
 
     if (name == QLatin1String("rsl_expand_variable"))

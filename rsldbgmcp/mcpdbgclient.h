@@ -22,8 +22,15 @@ public:
     // разрыв соединения). Возвращает снапшот состояния.
     QJsonObject waitEvent(int timeoutMs);
 
-    // Текущее состояние без ожидания.
-    QJsonObject snapshot(bool withSourceText) const;
+    // Текущее состояние без ожидания. frames по умолчанию включены;
+    // waitEvent их не отдаёт (для стека есть отдельный rsl_stack),
+    // только счётчик frames_count.
+    QJsonObject snapshot(bool withSourceText, bool withFrames = true) const;
+
+    // Вызывается при отправке execContinue: текущий останов "отыгран",
+    // следующий waitEvent должен ждать НОВОГО события. Без этого повторный
+    // waitEvent на уже стоящем отладчике сгорал бы впустую до таймаута.
+    void notifyContinueSent() { m_EventPending = false; }
 
     QJsonObject lastEvent() const { return m_Event; }
     QJsonArray breakpoints() const { return m_Bps; }
@@ -52,6 +59,7 @@ private:
     QEventLoop *m_WaitLoop = nullptr;
 
     volatile bool m_FlagEvent = false;
+    volatile bool m_EventPending = false; // есть неотыгранный останов
     volatile bool m_FlagLocals = false;
     volatile bool m_FlagValue = false;
 

@@ -370,11 +370,16 @@ void DbgServer::UpdateText(const int &index)
     int isBtrStream = 0;
     char *filename = RslGetModuleFile((Qt::HANDLE)mod, &isBtrStream);
 
-    QString content = ReadTextFileContent(filename, "IBM 866");
+    const QString fileNameStr = oem866->toUnicode(filename);
+    if (m_TextCacheFile != fileNameStr)
+    {
+        m_TextCacheFile = fileNameStr;
+        m_TextCacheContent = ReadTextFileContent(filename, "IBM 866");
+    }
 
-    root["filename"] = oem866->toUnicode(filename);
-    if (!content.isEmpty())
-        root["text"] = content;
+    root["filename"] = fileNameStr;
+    if (!m_TextCacheContent.isEmpty())
+        root["text"] = m_TextCacheContent;
 
     write(DBG_REQUEST_UPDATETEXT_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
 

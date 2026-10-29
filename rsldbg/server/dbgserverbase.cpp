@@ -277,15 +277,39 @@ void DbgServerBase::run()
             return;
         }
 
+        // Логируем пира: помогает опознать "молчаливые" подключения
+        // (сканеры портов, антивирусы, старые клиенты), которые занимают
+        // accept-цикл и не дают подключиться настоящему клиенту.
+        QString peerStr = QStringLiteral("?");
+        {
+            sockaddr_in peer = {};
+            int peerLen = sizeof(peer);
+            if (getpeername(ClientSocket, (sockaddr*)&peer, &peerLen) == 0)
+            {
+                char ipbuf[INET_ADDRSTRLEN] = {};
+                if (inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf)))
+                    peerStr = QStringLiteral("%1:%2").arg(QLatin1String(ipbuf))
+                                                     .arg(ntohs(peer.sin_port));
+            }
+        }
+        qInfo(dbgServer()) << "Accepted connection from" << peerStr;
+
         // Таймаут на авторизацию: случайный скан порта не вешает сессию.
         DWORD authTimeout = 10000;
         setsockopt(ClientSocket, SOL_SOCKET, SO_RCVTIMEO,
                    (const char*)&authTimeout, sizeof(authTimeout));
 
+        // Мелкий request/response пинг-понг с клиентом: отключаем Nagle,
+        // чтобы кадры уходили без задержки на склейку.
+        BOOL noDelay = TRUE;
+        setsockopt(ClientSocket, IPPROTO_TCP, TCP_NODELAY,
+                   (const char*)&noDelay, sizeof(noDelay));
+
         if (waitAuth())
             break;
 
-        qInfo(dbgServer()) << "Client auth failed or timed out, back to accept";
+        qInfo(dbgServer()) << "Client auth failed or timed out" << peerStr
+                           << "- back to accept";
         shutdown(ClientSocket, SD_BOTH);
         closesocket(ClientSocket);
         ClientSocket = INVALID_SOCKET;
@@ -444,13 +468,22 @@ bool DbgServerBase::waitAuth()
     packet.append((char*)&handshake, sizeof(DBGHEADER));
     packet.append((char*)&hs, sizeof(DBG_HANDSHAKE));
     if (send(ClientSocket, packet.data(), packet.size(), 0) == SOCKET_ERROR)
+    {
+        qInfo(dbgServer()) << "Auth: handshake send failed, WSA error"
+                           << WSAGetLastError();
         return false;
+    }
 
     // Ожидаем DBG_REQUEST_AUTH {"token": "..."} (SO_RCVTIMEO=10с выставлен
     // вызывающим кодом).
     DBGHEADER hdr;
-    if (recvAll((char*)&hdr, sizeof(hdr)) <= 0)
+    const int gotHdr = recvAll((char*)&hdr, sizeof(hdr));
+    if (gotHdr <= 0)
+    {
+        qInfo(dbgServer()) << "Auth: no auth frame received (recv" << gotHdr
+                           << ", WSA error" << WSAGetLastError() << ")";
         return false;
+    }
 
     // NB: асимметрия протокола - клиент в hdr.size кладёт размер ТОЛЬКО
     // payload (см. DbgClient::write), главный цикл ниже тоже ждёт payload-only.

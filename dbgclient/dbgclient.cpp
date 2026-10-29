@@ -39,6 +39,17 @@ void DbgClient::disconnectFromHost()
 
 bool DbgClient::connectToHost(const QString &hostName, quint16 port)
 {
+    // Сокет переиспользуется между rsl_connect: если после прошлой сессии
+    // он ещё не дошёл до UnconnectedState (ClosingState и т.п.), Qt может
+    // проигнорировать connectToHost - страхуемся принудительным abort.
+    if (m_pSocket->state() != QAbstractSocket::UnconnectedState)
+        m_pSocket->abort();
+
+    // КРИТИЧНО: слот readyRead остаётся подключённым после прошлой сессии и
+    // на повторном коннекте съедает handshake (парсит его как JSON и молча
+    // выкидывает) - ручное чтение в connectToHost тогда висит до таймаута.
+    disconnect(m_pSocket, &QTcpSocket::readyRead, this, &DbgClient::readyRead);
+
     m_pSocket->connectToHost(hostName, port);
 
     qInfo(dbg()) << "Try connect to" << hostName << ":" << port;
@@ -53,6 +64,14 @@ bool DbgClient::connectToHost(const QString &hostName, quint16 port)
         return false;
     }
 
+    // Локальный порт - для корреляции с серверным логом
+    // "Accepted connection from <ip:port>".
+    qInfo(dbg()) << "Connected, local port" << m_pSocket->localPort();
+
+    // Мелкий request/response пинг-понг: Nagle + delayed ACK на localhost
+    // добавляют десятки миллисекунд на каждый обмен - отключаем.
+    m_pSocket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+
     // Заголовок handshake может прийти по частям - дочитываем в цикле.
     QByteArray headerdata;
     while (headerdata.size() < (int)sizeof(DBGHEADER))
@@ -65,9 +84,10 @@ bool DbgClient::connectToHost(const QString &hostName, quint16 port)
 
     if (headerdata.size() != sizeof(DBGHEADER))
     {
-        setError(QString("Invalid header size: expected %1, received %2")
+        setError(QString("Invalid header size: expected %1, received %2 (socket: %3)")
                      .arg(sizeof(DBGHEADER))
-                     .arg(headerdata.size()));
+                     .arg(headerdata.size())
+                     .arg(m_pSocket->errorString()));
 
         m_pSocket->disconnectFromHost();
         return false;
@@ -129,7 +149,10 @@ bool DbgClient::connectToHost(const QString &hostName, quint16 port)
         return false;
     }
 
-    connect(m_pSocket, &QTcpSocket::readyRead, this, &DbgClient::readyRead);
+    // UniqueConnection: повторные коннекты в одном процессе не должны
+    // плодить дубли подключений (каждое - лишний вызов readyRead на кадр).
+    connect(m_pSocket, &QTcpSocket::readyRead, this, &DbgClient::readyRead,
+            Qt::UniqueConnection);
 
     if (m_pSocket->bytesAvailable())
         readyRead();
@@ -290,6 +313,12 @@ void DbgClient::readyRead()
         m_pSocket->read(sizeof(DBGHEADER)); // теперь извлекаем заголовок
         const qint64 payloadSize = (qint64)header.size - (qint64)sizeof(DBGHEADER);
         QByteArray payload = m_pSocket->read(payloadSize);
+
+        // DBG_HANDSHAKE - бинарный кадр, не JSON. Штатно его читает ручной
+        // цикл в connectToHost; сюда он может попасть только при гонке -
+        // пропускаем молча, чтобы не засорять лог фантомными ошибками парсинга.
+        if (header.action == DBG_REQUEST_HANDSHAKE)
+            continue;
 
         QJsonParseError parseError = {};
         QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);

@@ -47,11 +47,17 @@ bool McpDbgClient::waitFlag(volatile bool &flag, int timeoutMs)
 
 QJsonObject McpDbgClient::waitEvent(int timeoutMs)
 {
-    waitFlag(m_FlagEvent, timeoutMs);
-    return snapshot(false);
+    // Останов уже наступил и continue с тех пор не отправляли -
+    // отдаём текущий снапшот сразу, повторный wait не должен висеть
+    // до таймаута в ожидании события, которое уже было.
+    if (!m_EventPending)
+        waitFlag(m_FlagEvent, timeoutMs);
+
+    // Без frames: полный стек - по запросу через rsl_stack
+    return snapshot(false, false);
 }
 
-QJsonObject McpDbgClient::snapshot(bool withSourceText) const
+QJsonObject McpDbgClient::snapshot(bool withSourceText, bool withFrames) const
 {
     QJsonObject src = m_Text;
     if (!withSourceText)
@@ -61,7 +67,10 @@ QJsonObject McpDbgClient::snapshot(bool withSourceText) const
     out.insert(QStringLiteral("connected"), isConnected());
     out.insert(QStringLiteral("event"), m_Event);
     out.insert(QStringLiteral("source"), src);
-    out.insert(QStringLiteral("frames"), m_Frames);
+    out.insert(QStringLiteral("frames_count"), m_Frames.size());
+    out.insert(QStringLiteral("vars_count"), m_Vars.size());
+    if (withFrames)
+        out.insert(QStringLiteral("frames"), m_Frames);
     out.insert(QStringLiteral("vars"), m_Vars);
     return out;
 }
@@ -82,6 +91,7 @@ QJsonObject McpDbgClient::valueInfoAndWait(qint64 val, qint64 info, int timeoutM
 void McpDbgClient::onEvent(const QJsonObject &obj)
 {
     m_Event = obj;
+    m_EventPending = true;
     m_FlagEvent = true;
     wake();
 }
@@ -104,9 +114,36 @@ void McpDbgClient::onUpdateStack(const QJsonObject &obj)
     m_Frames = obj.value(QStringLiteral("frames")).toArray();
 }
 
+// Поля переменной, нужные агенту: просмотр (name/type/value), раскрытие
+// (index/st/object/depth/expanded), запрос значения (val/info), контекст
+// (proc). Остальное (exp, mod, procHandle, fakeChildren, lvalue) - хендлы
+// и флаги GUI-клиента, MCP-инструментами не используются.
+static QJsonObject slimVar(const QJsonObject &v)
+{
+    static const char *const keep[] = {
+        "index", "name", "type", "value", "depth",
+        "object", "expanded", "proc", "val", "info", "st"
+    };
+
+    QJsonObject out;
+    for (const char *key : keep)
+    {
+        const QString k = QString::fromLatin1(key);
+        const QJsonValue val = v.value(k);
+        if (!val.isUndefined())
+            out.insert(k, val);
+    }
+    return out;
+}
+
 void McpDbgClient::onUpdateLocals(const QJsonObject &obj)
 {
-    m_Vars = obj.value(QStringLiteral("vars")).toArray();
+    const QJsonArray vars = obj.value(QStringLiteral("vars")).toArray();
+
+    m_Vars = QJsonArray();
+    for (const QJsonValue &v : vars)
+        m_Vars.append(slimVar(v.toObject()));
+
     m_FlagLocals = true;
     wake();
 }

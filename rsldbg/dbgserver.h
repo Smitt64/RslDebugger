@@ -57,6 +57,11 @@ private:
 
     Qt::HANDLE m_curModuleInView;
 
+    // Кэш текста модуля: UPDATETEXT идёт на каждом шаге, а файл .mac
+    // во время отладки не меняется - не перечитываем его с диска.
+    QString m_TextCacheFile;
+    QString m_TextCacheContent;
+
     QScopedPointer<QProcess> m_pProc;
 };
 

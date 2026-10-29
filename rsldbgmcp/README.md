@@ -27,12 +27,12 @@ AI-клиент ──stdio──> rsldbgmcp.exe ──TCP──> rsldbg.dll (о
 | `rsl_sessions` | Поиск живых отладочных сессий (UDP discovery, порт 51491) |
 | `rsl_connect` | Подключение по `rsldbg://host:port?token=...` или host/port/token |
 | `rsl_disconnect` | Отключение от сессии |
-| `rsl_continue` | Управление выполнением: run, step_over, step_into, step_out, abort |
-| `rsl_wait_event` | Ожидание останова/события, возвращает снапшот состояния |
+| `rsl_continue` | Управление выполнением: run, step_over, step_into, step_out, abort; `wait=true` — сразу ждёт останова и возвращает снапшот (экономит отдельный вызов `rsl_wait_event`) |
+| `rsl_wait_event` | Ожидание останова/события, возвращает снапшот (событие, строка, переменные, счётчики; без текста модуля и без стека — стек отдельно через `rsl_stack`); повторный вызов на стоящем отладчике — мгновенный |
 | `rsl_locals` | Локальные переменные текущего кадра |
 | `rsl_stack` | Стек вызовов |
 | `rsl_breakpoints` | Точки останова |
-| `rsl_source` | Текущий модуль: файл, строка, полный текст |
+| `rsl_source` | Текущий модуль: файл, строка, текст; `context: N` — только ±N строк вокруг текущей |
 | `rsl_expand_variable` | Развернуть объектную переменную |
 | `rsl_var_value` | Имя/тип/значение переменной по хендлам val/info |
 
@@ -53,5 +53,5 @@ AI-клиент ──stdio──> rsldbgmcp.exe ──TCP──> rsldbg.dll (о
    и пишется в лог).
 2. `rsl_sessions` → список сессий (pid, port, exe).
 3. `rsl_connect` с URI сессии.
-4. `rsl_continue {mode: "step_over"}` → `rsl_wait_event` → `rsl_locals`,
+4. `rsl_continue {mode: "step_over", wait: true}` → `rsl_locals`,
    `rsl_stack`, `rsl_source` — итеративная отладка.

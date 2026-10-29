@@ -78,3 +78,19 @@ dbgclient/release/
 rsldbgmcp/debug/
 rsldbgmcp/release/
 __pycache__/
+
+rsldbgclnt/release/
+
+rslexecutor/release/
+
+rsledit/release/
+
+rslrun/release/
+
+rsldbg/release/
+
+# Dev environment artifacts
+.claude/
+.mcp.json
+loki/release/
+
