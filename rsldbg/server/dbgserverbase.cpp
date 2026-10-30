@@ -1,42 +1,40 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <wincrypt.h>
 #include "dbgserverbase.h"
 #include "dbgannouncer.h"
 #include "serveractionevent.h"
 #include "../dbgsettings.h"
-#include <QThread>
-#include <QProcess>
-#include <QNetworkInterface>
-#include <QHostInfo>
-#include <QApplication>
-#include <QTextCodec>
-#include <QStack>
-#include <QMutexLocker>
-#include <QDataStream>
-#include <QUuid>
-#include <QJsonDocument>
-#include <QJsonObject>
+#include "../dbglog.h"
+#include "../strconv.h"
+#include "../vendor/json.hpp"
 
-Q_LOGGING_CATEGORY(dbgServer, "rsldbg.server")
+#include <thread>
+#include <chrono>
+#include <stack>
+#include <vector>
+#include <cstdio>
+
+using nlohmann::json;
 
 // Копирование строки в буфер обмена через Win32: run() выполняется в рабочем
-// потоке, а QClipboard доступен только из GUI-потока.
-static void copyToClipboard(const QString &text)
+// потоке, GUI-API буфера обмена недоступен.
+static void copyToClipboard(const std::string &utf8)
 {
     if (!OpenClipboard(NULL))
         return;
 
     EmptyClipboard();
 
-    const QString wide = text;
-    const int bytes = (wide.length() + 1) * int(sizeof(wchar_t));
+    const std::wstring wide = dbgstr::utf8_to_wide(utf8);
+    const int bytes = int((wide.size() + 1) * sizeof(wchar_t));
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
     if (hMem)
     {
         void *dst = GlobalLock(hMem);
         if (dst)
         {
-            memcpy(dst, wide.utf16(), bytes);
+            memcpy(dst, wide.c_str(), bytes);
             GlobalUnlock(hMem);
             SetClipboardData(CF_UNICODETEXT, hMem);
         }
@@ -47,35 +45,58 @@ static void copyToClipboard(const QString &text)
     CloseClipboard();
 }
 
-DbgServerBase::DbgServerBase(QObject *parent)
-    : QObject{parent},
-    QRunnable()
+static void sleepUs(unsigned long us)
 {
-    //prevStack = 0;
-    //newDbg = true;
+    std::this_thread::sleep_for(std::chrono::microseconds(us));
+}
+
+// Случайный токен сессии для gui_remote без явного auth_token в ini
+// (был QUuid::createUuid): 16 байт CryptGenRandom в hex-виде.
+static std::string makeRandomToken()
+{
+    HCRYPTPROV prov = 0;
+    unsigned char rnd[16] = {};
+
+    if (CryptAcquireContextW(&prov, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT))
+    {
+        CryptGenRandom(prov, sizeof(rnd), rnd);
+        CryptReleaseContext(prov, 0);
+    }
+    else
+    {
+        // Крайне маловероятный fallback: не криптостойко, но лучше, чем ничего.
+        DWORD t = GetTickCount();
+        for (size_t i = 0; i < sizeof(rnd); ++i)
+        {
+            t = t * 1664525u + 1013904223u;
+            rnd[i] = (unsigned char)(t >> 24);
+        }
+    }
+
+    char hex[33];
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(rnd); ++i)
+    {
+        hex[i * 2] = digits[rnd[i] >> 4];
+        hex[i * 2 + 1] = digits[rnd[i] & 0xF];
+    }
+    hex[32] = 0;
+
+    return std::string(hex, 32);
+}
+
+DbgServerBase::DbgServerBase()
+{
     ClientSocket = INVALID_SOCKET;
     m_Port = 0;
-    oem866 = QTextCodec::codecForName("IBM 866");
+    m_curdbg = nullptr;
 
-    m_finishedFlag.storeRelease(0);
-    m_continueFlag.storeRelease(0);
-
-    // DirectConnection: лямбда исполняется прямо в рабочем потоке сервера
-    // в момент emit finished() - queued-доставке мы не доверяем (см. .h).
-    QObject::connect(this, &DbgServerBase::finished, this, [this]
-    {
-        m_finishedFlag.storeRelease(1);
-    }, Qt::DirectConnection);
+    m_finishedFlag.store(0);
+    m_continueFlag.store(0);
 }
 
 DbgServerBase::~DbgServerBase()
 {
-
-}
-
-bool cstartApp()
-{
-    return false;
 }
 
 bool DbgServerBase::isConnected()
@@ -88,7 +109,7 @@ int DbgServerBase::port()
     return m_Port;
 }
 
-void DbgServerBase::write(qint16 action, const QByteArray &data)
+void DbgServerBase::write(qint16 action, const std::string &data)
 {
     DBGHEADER hdr;
     // NB: размер вычисляем выражением, а не запоминаем в hdr.size заранее:
@@ -96,21 +117,21 @@ void DbgServerBase::write(qint16 action, const QByteArray &data)
     // передавался по ссылке и алиасинг с hdr.size давал size == 0 на проводе).
     DbgMakeHeader(&hdr, int(sizeof(DBGHEADER)) + data.size(), action);
 
-    QByteArray tmp;
+    std::string tmp;
     tmp.append((char*)&hdr, sizeof(DBGHEADER));
     tmp.append(data);
 
     // Сокет неблокирующий: send может отослать часть данных или
     // вернуть WSAEWOULDBLOCK - досылаем в цикле.
-    int sent = 0;
+    size_t sent = 0;
     while (sent < tmp.size())
     {
-        int r = send(ClientSocket, tmp.data() + sent, tmp.size() - sent, 0);
+        int r = send(ClientSocket, tmp.data() + sent, int(tmp.size() - sent), 0);
 
         if (r > 0)
             sent += r;
         else if (r == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-            QThread::usleep(50);
+            sleepUs(50);
         else
             break;
     }
@@ -129,9 +150,9 @@ void DbgServerBase::run()
     iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
     if (iResult != 0)
     {
-        m_LastError = QString("WSAStartup failed with error: %1").arg(iResult);
-        qCritical(dbgServer()) << m_LastError;
-        emit finished();
+        m_LastError = std::string("WSAStartup failed with error: ") + std::to_string(iResult);
+        DBG_LOGE("%s", m_LastError.c_str());
+        m_finishedFlag.store(1);
         return;
     }
 
@@ -155,23 +176,23 @@ void DbgServerBase::run()
 
     if ( iResult != 0 )
     {
-        m_LastError = QString("getaddrinfo failed with error: %1").arg(iResult);
-        qCritical(dbgServer()) << m_LastError;
+        m_LastError = std::string("getaddrinfo failed with error: ") + std::to_string(iResult);
+        DBG_LOGE("%s", m_LastError.c_str());
 
         WSACleanup();
-        emit finished();
+        m_finishedFlag.store(1);
         return;
     }
 
     ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
     if (ListenSocket == INVALID_SOCKET)
     {
-        m_LastError = QString("socket failed with error: %1").arg(WSAGetLastError());
-        qCritical(dbgServer()) << m_LastError;
+        m_LastError = std::string("socket failed with error: ") + std::to_string(WSAGetLastError());
+        DBG_LOGE("%s", m_LastError.c_str());
 
         freeaddrinfo(result);
         WSACleanup();
-        emit finished();
+        m_finishedFlag.store(1);
         return;
     }
 
@@ -181,13 +202,13 @@ void DbgServerBase::run()
     iResult = bind(ListenSocket, result->ai_addr, (int)result->ai_addrlen);
     if (iResult == SOCKET_ERROR)
     {
-        m_LastError = QString("bind failed with error: %1").arg(WSAGetLastError());
-        qCritical(dbgServer()) << m_LastError;
+        m_LastError = std::string("bind failed with error: ") + std::to_string(WSAGetLastError());
+        DBG_LOGE("%s", m_LastError.c_str());
 
         freeaddrinfo(result);
         closesocket(ListenSocket);
         WSACleanup();
-        emit finished();
+        m_finishedFlag.store(1);
         return;
     }
 
@@ -200,17 +221,17 @@ void DbgServerBase::run()
         if (getsockname(ListenSocket, (sockaddr*)&bound, &boundLen) == 0)
             m_Port = ntohs(bound.sin_port);
     }
-    qInfo(dbgServer()) << "Server binds to" << ipAddress << "port" << m_Port;
+    DBG_LOGI("Server binds to %s port %d", ipAddress, m_Port);
 
     iResult = listen(ListenSocket, SOMAXCONN);
     if (iResult == SOCKET_ERROR)
     {
-        m_LastError = QString("listen failed with error: %1").arg(WSAGetLastError());
-        qCritical(dbgServer()) << m_LastError;
+        m_LastError = std::string("listen failed with error: ") + std::to_string(WSAGetLastError());
+        DBG_LOGE("%s", m_LastError.c_str());
 
         closesocket(ListenSocket);
         WSACleanup();
-        emit finished();
+        m_finishedFlag.store(1);
         return;
     }
 
@@ -218,24 +239,32 @@ void DbgServerBase::run()
     // достаточно самого кадра DBG_REQUEST_AUTH - он и есть "привет, я клиент".
     // Для gui_remote (0.0.0.0) без явного токена генерируем случайный -
     // слушать всю сеть совсем без защиты нельзя.
-    if (!settings.authToken.isEmpty())
+    if (!settings.authToken.empty())
         m_Token = settings.authToken;
     else if (settings.clientMode == DbgClientGuiRemote)
-        m_Token = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        m_Token = makeRandomToken();
 
     // URI подключения (как токен бота в Telegram): показываем пользователю
     // в логе и кладём в буфер обмена - вставил в конфиг клиента/MCP и готово.
     if (settings.clientMode != DbgClientGui)
     {
-        QString uri = QStringLiteral("rsldbg://%1:%2")
-                          .arg(settings.clientMode == DbgClientGuiRemote
-                                   ? QHostInfo::localHostName()
-                                   : QStringLiteral("127.0.0.1"))
-                          .arg(m_Port);
-        if (!m_Token.isEmpty())
-            uri += QStringLiteral("?token=") + m_Token;
+        std::string host;
+        if (settings.clientMode == DbgClientGuiRemote)
+        {
+            char hn[256] = {};
+            if (gethostname(hn, sizeof(hn) - 1) == 0)
+                host = dbgstr::ansi_to_utf8(hn);
+            else
+                host = "127.0.0.1";
+        }
+        else
+            host = "127.0.0.1";
 
-        qWarning(dbgServer()) << "Debug session URI:" << uri;
+        std::string uri = "rsldbg://" + host + ":" + std::to_string(m_Port);
+        if (!m_Token.empty())
+            uri += "?token=" + m_Token;
+
+        DBG_LOGW("Debug session URI: %s", uri.c_str());
         copyToClipboard(uri);
     }
 
@@ -245,19 +274,19 @@ void DbgServerBase::run()
     {
         if (!startApp())
         {
-            m_LastError = QString("Can't start debug app");
-            qCritical(dbgServer()) << m_LastError;
+            m_LastError = "Can't start debug app";
+            DBG_LOGE("%s", m_LastError.c_str());
 
             closesocket(ListenSocket);
             WSACleanup();
-            emit finished();
+            m_finishedFlag.store(1);
             return;
         }
     }
-    else if (settings.announceBroadcast || !settings.announceTo.isEmpty())
+    else if (settings.announceBroadcast || !settings.announceTo.empty())
     {
         m_Announcer.reset(new DbgAnnouncer());
-        m_Announcer->start((quint16)m_Port);
+        m_Announcer->start((unsigned short)m_Port);
     }
 
     // accept с авторизацией: при неверном токене закрываем соединение и
@@ -268,19 +297,19 @@ void DbgServerBase::run()
 
         if (ClientSocket == INVALID_SOCKET)
         {
-            m_LastError = QString("accept failed with error: %1").arg(WSAGetLastError());
-            qCritical(dbgServer()) << m_LastError;
+            m_LastError = std::string("accept failed with error: ") + std::to_string(WSAGetLastError());
+            DBG_LOGE("%s", m_LastError.c_str());
 
             closesocket(ListenSocket);
             WSACleanup();
-            emit finished();
+            m_finishedFlag.store(1);
             return;
         }
 
         // Логируем пира: помогает опознать "молчаливые" подключения
         // (сканеры портов, антивирусы, старые клиенты), которые занимают
         // accept-цикл и не дают подключиться настоящему клиенту.
-        QString peerStr = QStringLiteral("?");
+        std::string peerStr = "?";
         {
             sockaddr_in peer = {};
             int peerLen = sizeof(peer);
@@ -288,11 +317,15 @@ void DbgServerBase::run()
             {
                 char ipbuf[INET_ADDRSTRLEN] = {};
                 if (inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf)))
-                    peerStr = QStringLiteral("%1:%2").arg(QLatin1String(ipbuf))
-                                                     .arg(ntohs(peer.sin_port));
+                {
+                    char pbuf[64];
+                    _snprintf(pbuf, sizeof(pbuf), "%s:%u", ipbuf, (unsigned)ntohs(peer.sin_port));
+                    pbuf[sizeof(pbuf) - 1] = 0;
+                    peerStr = pbuf;
+                }
             }
         }
-        qInfo(dbgServer()) << "Accepted connection from" << peerStr;
+        DBG_LOGI("Accepted connection from %s", peerStr.c_str());
 
         // Таймаут на авторизацию: случайный скан порта не вешает сессию.
         DWORD authTimeout = 10000;
@@ -308,8 +341,7 @@ void DbgServerBase::run()
         if (waitAuth())
             break;
 
-        qInfo(dbgServer()) << "Client auth failed or timed out" << peerStr
-                           << "- back to accept";
+        DBG_LOGI("Client auth failed or timed out %s - back to accept", peerStr.c_str());
         shutdown(ClientSocket, SD_BOTH);
         closesocket(ClientSocket);
         ClientSocket = INVALID_SOCKET;
@@ -325,28 +357,26 @@ void DbgServerBase::run()
                (const char*)&noTimeout, sizeof(noTimeout));
 
     closesocket(ListenSocket);
-    qInfo(dbgServer()) << "Client connected (accepted), port" << m_Port;
+    DBG_LOGI("Client connected (accepted), port %d", m_Port);
 
     // Неблокирующий режим, чтобы можно было отличить закрытие соединения
     // клиентом (recv == 0) от простого отсутствия данных (WSAEWOULDBLOCK).
     u_long nonBlock = 1;
     ioctlsocket(ClientSocket, FIONBIO, &nonBlock);
 
-    emit started();
-
-    QByteArray buffer;
-    QStack<DBGHEADER> headers;
+    std::string buffer;
+    std::stack<DBGHEADER> headers;
     bool stop = false;
 
     do {
-        QEvent *event = peekServerEvent();
+        DbgServerEvent *event = peekServerEvent();
         if (event)
         {
             serverEvent(event);
             delete event;
         }
 
-        QThread::usleep(50);
+        sleepUs(50);
 
         if (headers.empty())
         {
@@ -355,8 +385,7 @@ void DbgServerBase::run()
 
             if (ioRes == SOCKET_ERROR)
             {
-                int wsa = WSAGetLastError();
-                qInfo(dbgServer()) << "FIONREAD(header) failed, WSA =" << wsa;
+                DBG_LOGI("FIONREAD(header) failed, WSA = %d", WSAGetLastError());
                 stop = true;
                 continue;
             }
@@ -368,7 +397,7 @@ void DbgServerBase::run()
 
                 if (iResult <= 0)
                 {
-                    qInfo(dbgServer()) << "Connection closed while reading header, recv =" << iResult;
+                    DBG_LOGI("Connection closed while reading header, recv = %d", iResult);
                     stop = true;
                 }
                 else
@@ -384,8 +413,8 @@ void DbgServerBase::run()
                 if (iResult == 0 ||
                     (iResult == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK))
                 {
-                    qInfo(dbgServer()) << "Client disconnected (peek), recv =" << iResult
-                                       << "WSA =" << WSAGetLastError();
+                    DBG_LOGI("Client disconnected (peek), recv = %d WSA = %d",
+                             iResult, WSAGetLastError());
                     stop = true;
                 }
             }
@@ -399,32 +428,29 @@ void DbgServerBase::run()
 
             if (ioRes == SOCKET_ERROR)
             {
-                int wsa = WSAGetLastError();
-                qInfo(dbgServer()) << "FIONREAD(body) failed, WSA =" << wsa;
+                DBG_LOGI("FIONREAD(body) failed, WSA = %d", WSAGetLastError());
                 stop = true;
                 continue;
             }
 
-            if (l >= hdr.size)
+            if (l >= (unsigned long)hdr.size)
             {
-                char *tmp = new char[hdr.size];
-                iResult = recv(ClientSocket, tmp, hdr.size - buffer.size(), 0);
+                std::vector<char> tmp(hdr.size);
+                iResult = recv(ClientSocket, tmp.data(), hdr.size - (int)buffer.size(), 0);
 
                 if (iResult <= 0)
                     stop = true;
                 else
-                    buffer.append(tmp, iResult);
+                    buffer.append(tmp.data(), iResult);
 
-                if (buffer.size() == hdr.size)
+                if (buffer.size() == (size_t)hdr.size)
                 {
-                    QEvent *event = new ServerActionEvent(hdr.action, buffer);
+                    DbgServerEvent *event = new ServerActionEvent(hdr.action, buffer);
                     sendServerAction(event);
 
                     buffer.clear();
                     headers.pop();
                 }
-
-                delete[] tmp;
             }
         }
     } while (!stop);
@@ -434,9 +460,10 @@ void DbgServerBase::run()
     clientDisconnected();
 
     iResult = shutdown(ClientSocket, SD_SEND);
+    (void)iResult;
     closesocket(ClientSocket);
     WSACleanup();
-    emit finished();
+    m_finishedFlag.store(1);
 }
 
 int DbgServerBase::recvAll(char *dst, int size)
@@ -464,13 +491,12 @@ bool DbgServerBase::waitAuth()
     DBG_HANDSHAKE hs;
     hs.version = RSLDBG_PROTOCOL_VERSION;
 
-    QByteArray packet;
+    std::string packet;
     packet.append((char*)&handshake, sizeof(DBGHEADER));
     packet.append((char*)&hs, sizeof(DBG_HANDSHAKE));
-    if (send(ClientSocket, packet.data(), packet.size(), 0) == SOCKET_ERROR)
+    if (send(ClientSocket, packet.data(), (int)packet.size(), 0) == SOCKET_ERROR)
     {
-        qInfo(dbgServer()) << "Auth: handshake send failed, WSA error"
-                           << WSAGetLastError();
+        DBG_LOGI("Auth: handshake send failed, WSA error %d", WSAGetLastError());
         return false;
     }
 
@@ -480,8 +506,8 @@ bool DbgServerBase::waitAuth()
     const int gotHdr = recvAll((char*)&hdr, sizeof(hdr));
     if (gotHdr <= 0)
     {
-        qInfo(dbgServer()) << "Auth: no auth frame received (recv" << gotHdr
-                           << ", WSA error" << WSAGetLastError() << ")";
+        DBG_LOGI("Auth: no auth frame received (recv %d, WSA error %d)",
+                 gotHdr, WSAGetLastError());
         return false;
     }
 
@@ -492,35 +518,36 @@ bool DbgServerBase::waitAuth()
         payload <= 0 || payload > 4096)
         return false;
 
-    QByteArray body(payload, 0);
-    if (recvAll(body.data(), payload) <= 0)
+    std::string body(payload, 0);
+    if (recvAll(&body[0], payload) <= 0)
         return false;
 
-    const QJsonObject obj = QJsonDocument::fromJson(body).object();
+    const json obj = json::parse(body, nullptr, false);
+    if (obj.is_discarded() || !obj.is_object())
+        return false;
 
     // Токен не настроен -> авторизуем любого, кто прислал корректный
     // кадр DBG_REQUEST_AUTH (локальный listen на 127.0.0.1).
-    const bool ok = m_Token.isEmpty() ||
-                    obj.value(QStringLiteral("token")).toString() == m_Token;
+    const std::string token = obj.value("token", std::string());
+    const bool ok = m_Token.empty() || token == m_Token;
 
-    qInfo(dbgServer()) << "Auth request from client"
-                       << obj.value(QStringLiteral("client")).toString()
-                       << "token ok:" << ok;
+    DBG_LOGI("Auth request from client %s token ok: %d",
+             obj.value("client", std::string()).c_str(), (int)ok);
 
-    QJsonObject reply;
-    reply.insert(QStringLiteral("ok"), ok);
+    json reply;
+    reply["ok"] = ok;
     if (!ok)
-        reply.insert(QStringLiteral("error"), QStringLiteral("Invalid auth token"));
+        reply["error"] = "Invalid auth token";
 
-    const QByteArray replyJson = QJsonDocument(reply).toJson(QJsonDocument::Compact);
+    const std::string replyJson = reply.dump();
 
     DBGHEADER rhdr;
     DbgMakeHeader(&rhdr, int(sizeof(DBGHEADER)) + replyJson.size(), DBG_REQUEST_AUTH);
 
-    QByteArray rpacket;
+    std::string rpacket;
     rpacket.append((char*)&rhdr, sizeof(DBGHEADER));
     rpacket.append(replyJson);
-    send(ClientSocket, rpacket.data(), rpacket.size(), 0);
+    send(ClientSocket, rpacket.data(), (int)rpacket.size(), 0);
 
     return ok;
 }
@@ -530,33 +557,37 @@ bool DbgServerBase::startApp()
     return false;
 }
 
-QEvent* DbgServerBase::peekServerEvent()
+DbgServerEvent* DbgServerBase::peekServerEvent()
 {
-    QMutexLocker locker(&m_Mutex);
+    std::lock_guard<std::mutex> locker(m_Mutex);
 
     if (m_Messages.empty())
         return nullptr;
 
-    return m_Messages.dequeue();
+    DbgServerEvent *e = m_Messages.front();
+    m_Messages.pop();
+
+    return e;
 }
 
-void DbgServerBase::sendServerAction(QEvent *e)
+void DbgServerBase::sendServerAction(DbgServerEvent *e)
 {
-    QMutexLocker locker(&m_Mutex);
-    m_Messages.enqueue(e);
+    std::lock_guard<std::mutex> locker(m_Mutex);
+    m_Messages.push(e);
 }
 
-bool DbgServerBase::serverEvent(QEvent *e)
+bool DbgServerBase::serverEvent(DbgServerEvent *e)
 {
     if (e->type() == MSG_SERVER_EVENT)
-        return serverActionEvent(dynamic_cast<ServerActionEvent*>(e));
+        return serverActionEvent(static_cast<ServerActionEvent*>(e));
 
     return false;
 }
 
 bool DbgServerBase::serverActionEvent(ServerActionEvent *e)
 {
-    qDebug() << "DbgServerBase::serverActionEvent";
+    (void)e;
+    DBG_LOGI("DbgServerBase::serverActionEvent");
     return false;
 }
 

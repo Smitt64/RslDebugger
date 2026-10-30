@@ -4,23 +4,26 @@
 #include "dbgannouncer.h"
 #include "../dbgserverproto.h"
 #include "../dbgsettings.h"
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QHostInfo>
-#include <QDateTime>
-#include <QDebug>
+#include "../strconv.h"
+#include "../dbglog.h"
+#include "../vendor/json.hpp"
+
+#include <ctime>
+#include <algorithm>
+
+using nlohmann::json;
 
 namespace
 {
 const int HEARTBEAT_MS = 2000;
 
-QString processExeName()
+std::string processExeName()
 {
     wchar_t path[MAX_PATH] = {};
     if (GetModuleFileNameW(NULL, path, MAX_PATH))
-        return QString::fromWCharArray(path);
+        return dbgstr::wide_to_utf8(path);
 
-    return QString();
+    return std::string();
 }
 
 // Заголовок первого видимого окна текущего процесса (хост-приложение).
@@ -51,22 +54,47 @@ BOOL CALLBACK enumWndProc(HWND hwnd, LPARAM lParam)
     return TRUE;
 }
 
-QString processWindowTitle()
+std::string processWindowTitle()
 {
     EnumWndCtx ctx = { GetCurrentProcessId(), {} };
+    ctx.title[0] = 0;
     EnumWindows(enumWndProc, reinterpret_cast<LPARAM>(&ctx));
 
-    return QString::fromWCharArray(ctx.title);
+    return dbgstr::wide_to_utf8(ctx.title);
 }
 
-QString currentUserName()
+std::string currentUserName()
 {
     wchar_t name[256] = {};
     DWORD size = 255;
     if (GetUserNameW(name, &size))
-        return QString::fromWCharArray(name);
+        return dbgstr::wide_to_utf8(name);
 
-    return QString();
+    return std::string();
+}
+
+// Локальное время в ISO-виде (был QDateTime::toString(Qt::ISODate)).
+std::string currentIsoTime()
+{
+    const std::time_t t = std::time(nullptr);
+    std::tm tmv;
+    localtime_s(&tmv, &t);
+
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d",
+                  tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                  tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+
+    return std::string(buf);
+}
+
+std::string localHostName()
+{
+    char hn[256] = {};
+    if (gethostname(hn, sizeof(hn) - 1) == 0)
+        return dbgstr::ansi_to_utf8(hn);
+
+    return std::string();
 }
 } // namespace
 
@@ -77,7 +105,7 @@ DbgAnnouncer::~DbgAnnouncer()
     stop();
 }
 
-bool DbgAnnouncer::start(quint16 dbgPort)
+bool DbgAnnouncer::start(unsigned short dbgPort)
 {
     if (m_Running.load())
         return false;
@@ -111,25 +139,24 @@ void DbgAnnouncer::stop()
         m_Thread.join();
 }
 
-QByteArray DbgAnnouncer::buildPayload() const
+std::string DbgAnnouncer::buildPayload() const
 {
-    QJsonObject obj;
-    obj.insert(QStringLiteral("proto"), 1);
-    obj.insert(QStringLiteral("pid"), static_cast<qint64>(GetCurrentProcessId()));
-    obj.insert(QStringLiteral("port"), static_cast<qint64>(m_DbgPort));
-    obj.insert(QStringLiteral("exe"), processExeName());
-    obj.insert(QStringLiteral("user"), currentUserName());
-    obj.insert(QStringLiteral("host"), QHostInfo::localHostName());
-    obj.insert(QStringLiteral("dbgver"), RSLDBG_PROTOCOL_VERSION);
-    obj.insert(QStringLiteral("ts"),
-               QDateTime::currentDateTime().toString(Qt::ISODate));
+    json obj;
+    obj["proto"] = 1;
+    obj["pid"] = (long long)GetCurrentProcessId();
+    obj["port"] = (long long)m_DbgPort;
+    obj["exe"] = processExeName();
+    obj["user"] = currentUserName();
+    obj["host"] = localHostName();
+    obj["dbgver"] = RSLDBG_PROTOCOL_VERSION;
+    obj["ts"] = currentIsoTime();
 
     if (m_WithTitle)
-        obj.insert(QStringLiteral("title"), processWindowTitle());
+        obj["title"] = processWindowTitle();
 
     // NB: токен в анонс НЕ включаем - клиент получает его из rsldbg://-URI
     // (лог + буфер обмена) или из rsldbg.ini.
-    return QJsonDocument(obj).toJson(QJsonDocument::Compact);
+    return obj.dump();
 }
 
 void DbgAnnouncer::run()
@@ -151,7 +178,7 @@ void DbgAnnouncer::run()
 
     // --- список directed broadcast адресов по всем интерфейсам ---
     m_BcastAddrs.clear();
-    m_BcastAddrs.append(0xFFFFFFFFul); // 255.255.255.255
+    m_BcastAddrs.push_back(0xFFFFFFFFul); // 255.255.255.255
 
     ULONG bufLen = 16 * 1024;
     IP_ADAPTER_ADDRESSES *adapters = static_cast<IP_ADAPTER_ADDRESSES*>(malloc(bufLen));
@@ -174,8 +201,9 @@ void DbgAnnouncer::run()
                 if (ConvertLengthToIpv4Mask(u->OnLinkPrefixLength, &mask) == NO_ERROR && mask)
                 {
                     ULONG bcast = (sin->sin_addr.s_addr & mask) | ~mask;
-                    if (bcast && bcast != 0xFFFFFFFFul && !m_BcastAddrs.contains(bcast))
-                        m_BcastAddrs.append(bcast);
+                    if (bcast && bcast != 0xFFFFFFFFul &&
+                        std::find(m_BcastAddrs.begin(), m_BcastAddrs.end(), bcast) == m_BcastAddrs.end())
+                        m_BcastAddrs.push_back(bcast);
                 }
             }
         }
@@ -228,7 +256,7 @@ void DbgAnnouncer::run()
 
 void DbgAnnouncer::sendAnnounces()
 {
-    const QByteArray payload = buildPayload();
+    const std::string payload = buildPayload();
 
     if (m_Broadcast && m_BcastSock != INVALID_SOCKET)
     {
@@ -239,19 +267,19 @@ void DbgAnnouncer::sendAnnounces()
             to.sin_addr.s_addr = bcast;
             to.sin_port = htons(RSLDBG_ANNOUNCE_PORT);
 
-            sendto(static_cast<SOCKET>(m_BcastSock), payload.constData(), payload.size(),
+            sendto(static_cast<SOCKET>(m_BcastSock), payload.data(), (int)payload.size(),
                    0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
         }
     }
 
-    for (const QString &addr : m_UnicastTo)
+    for (const std::string &addr : m_UnicastTo)
     {
         sockaddr_in to = {};
         to.sin_family = AF_INET;
         to.sin_port = htons(RSLDBG_ANNOUNCE_PORT);
 
-        if (InetPtonA(AF_INET, addr.toLatin1().constData(), &to.sin_addr) == 1)
-            sendto(static_cast<SOCKET>(m_BcastSock), payload.constData(), payload.size(),
+        if (InetPtonA(AF_INET, addr.c_str(), &to.sin_addr) == 1)
+            sendto(static_cast<SOCKET>(m_BcastSock), payload.data(), (int)payload.size(),
                    0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
     }
 }
@@ -262,10 +290,10 @@ void DbgAnnouncer::handleProbe()
 
     // select с таймаутом HEARTBEAT_MS: за это время отвечаем на все
     // накопившиеся discover-запросы.
-    qint64 deadline = HEARTBEAT_MS;
+    int deadline = HEARTBEAT_MS;
     while (!m_Stop.load() && deadline > 0)
     {
-        const int slice = qMin<qint64>(deadline, 200);
+        const int slice = deadline < 200 ? deadline : 200;
 
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -290,12 +318,13 @@ void DbgAnnouncer::handleProbe()
             continue;
 
         buf[n] = 0;
-        QJsonObject req = QJsonDocument::fromJson(QByteArray(buf, n)).object();
-        if (req.value(QStringLiteral("cmd")).toString() != QLatin1String("discover"))
+        const json req = json::parse(buf, buf + n, nullptr, false);
+        if (req.is_discarded() || !req.is_object() ||
+            req.value("cmd", std::string()) != "discover")
             continue;
 
-        const QByteArray payload = buildPayload();
-        sendto(sock, payload.constData(), payload.size(), 0,
+        const std::string payload = buildPayload();
+        sendto(sock, payload.data(), (int)payload.size(), 0,
                reinterpret_cast<sockaddr*>(&from), fromLen);
     }
 }

@@ -1,8 +1,8 @@
 #ifndef BP_DATA_H
 #define BP_DATA_H
 
-#include <QObject>
-#include <qt_windows.h>
+#include <windows.h>
+#include <string>
 #include "rsl/dbgintf.h"
 
 enum BP_TYPE
@@ -13,13 +13,14 @@ enum BP_TYPE
     BP_DELETED
 };
 
+// modname - имя модуля в кодировке рантайма (ANSI/OEM байты, не UTF-8).
 typedef struct tagTBpData
 {
     BP_TYPE	      bp_type;
     int            offs;
     int            len;
     RSLMODULE      mod;
-    QString        modname;
+    std::string    modname;
     int            line;
     RSLSTMT        stmt;
     unsigned long  key;

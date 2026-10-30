@@ -1,5 +1,4 @@
 #include "convert.h"
-#include <QTextCodec>
 #include <Windows.h>
 
 void Win2Dos(char* str)

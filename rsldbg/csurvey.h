@@ -25,9 +25,9 @@ private:
     void NotifyCollapsing (iterator it);
     void BuildNameList (iterator it, std::vector<std::string>* dstNameList);
 
-    QByteArray unknownStr;
-    QByteArray errorStr;
-    QByteArray cannotevalStr;
+    std::string unknownStr;
+    std::string errorStr;
+    std::string cannotevalStr;
 
     int isObject;
     bool isExp;

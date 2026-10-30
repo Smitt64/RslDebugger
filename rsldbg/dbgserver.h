@@ -4,17 +4,14 @@
 #include "dbgserverproto.h"
 #include "lf/bp_data.h"
 #include "server/dbgserverbase.h"
-#include <QObject>
-#include <QCache>
+#include <string>
+#include <map>
 
 class CDebug;
-class QProcess;
-class QTextCodec;
 class DbgServer : public DbgServerBase
 {
-    Q_OBJECT
 public:
-    DbgServer(QObject *parent = nullptr);
+    DbgServer();
     virtual ~DbgServer();
 
     CDebug *m_curdbg;
@@ -23,46 +20,52 @@ public:
 
     void setIsNewDebug(const bool &v);
 
-public slots:
     void sendEventBreakPoint(Qt::HANDLE BpData);
 
 protected:
-    virtual bool startApp() Q_DECL_OVERRIDE;
-    virtual bool serverActionEvent(ServerActionEvent *e) Q_DECL_OVERRIDE;
-    virtual bool serverEvent(QEvent *e) Q_DECL_OVERRIDE;
-    virtual void clientDisconnected() Q_DECL_OVERRIDE;
-
-signals:
-    void finished();
-    void started();
-    void execContinue();
+    virtual bool startApp() override;
+    virtual bool serverActionEvent(ServerActionEvent *e) override;
+    virtual bool serverEvent(DbgServerEvent *e) override;
+    virtual void clientDisconnected() override;
 
 private:
-    QCache<Qt::HANDLE, QByteArray> m_ProcNamespace;
+    // namespace процедуры по стеку (THIS Object): сырые байты типа (ANSI)
+    std::map<void*, std::string> m_ProcNamespace;
 
-    QTextCodec *oem866;
     int RslGetModuleLine(Qt::HANDLE module, int offs, int len);
 
-    QString ReadTextFileContent(const QString &filename, const QString &encode);
+    // filename в UTF-8, encode - имя кодировки файла ("IBM 866" / пусто=UTF-8).
+    std::string ReadTextFileContent(const std::string &filename, const std::string &encode);
     void UpdateText(const int &index);
     void UpdateStack();
     void UpdateWatch();
     void UpdateDbgInfo(const int &index);
     void UpdateVariables(const int &index);
     void ShowVariables(const int &index);
-    void ShowVariableValue(const qint64 &val, const qint64 &info);
-    QString m_LastError;
+    void ShowVariableValue(const long long &val, const long long &info);
+    std::string m_LastError;
     RSLSTACK prevStack;
     bool newDbg;
 
     Qt::HANDLE m_curModuleInView;
 
     // Кэш текста модуля: UPDATETEXT идёт на каждом шаге, а файл .mac
-    // во время отладки не меняется - не перечитываем его с диска.
-    QString m_TextCacheFile;
-    QString m_TextCacheContent;
+    // во время отладки не меняется - поле "text" шлём только при смене
+    // модуля (с флагом "textChanged"), клиент держит свой кэш.
+    std::string m_TextCacheFile;     // UTF-8
+    std::string m_TextCacheContent;  // UTF-8
 
-    QScopedPointer<QProcess> m_pProc;
+    // Пакетный шаг (EXECCONTNUE с "skip_same_line"): повторяем команду
+    // автоматически, не уведомляя клиента, пока не сменится (модуль,
+    // строка) стартовой точки или не кончится лимит шагов. Режим только
+    // для step_over/step_into.
+    int   m_SkipCmd;        // 0 = неактивно, иначе EXECCONTNUE_*
+    int   m_SkipLeft;       // оставшиеся авто-шаги
+    void *m_SkipMod;        // модуль точки старта
+    int   m_SkipLine;       // строка точки старта
+    bool  m_SkipSwallowBp;  // проглотить BreakPointEvent авто-шага
+
+    void *m_ProcHandle; // HANDLE запущенного rsldbgclnt.exe (или nullptr)
 };
 
 #endif // DBGSERVER_H

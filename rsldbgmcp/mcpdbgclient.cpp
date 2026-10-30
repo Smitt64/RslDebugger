@@ -98,7 +98,16 @@ void McpDbgClient::onEvent(const QJsonObject &obj)
 
 void McpDbgClient::onUpdateText(const QJsonObject &obj)
 {
-    m_Text = obj;
+    // Сервер шлёт поле "text" только при смене модуля (textChanged);
+    // в остальных кадрах подставляем закэшированный текст.
+    if (!obj.contains(QLatin1String("text")) && m_Text.contains(QLatin1String("text")))
+    {
+        QJsonObject merged = obj;
+        merged.insert(QStringLiteral("text"), m_Text.value(QStringLiteral("text")));
+        m_Text = merged;
+    }
+    else
+        m_Text = obj;
     // НЕ будим wait_event: сервер шлёт состояние пачкой
     // (text/locals/stack), а завершает её кадром EVENT (110). Пробуждение
     // по text дало бы неполный снапшот (event=None, frames=0, vars=0).

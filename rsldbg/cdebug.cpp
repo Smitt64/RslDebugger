@@ -5,11 +5,11 @@
 #include "cwatchv.h"
 #include "saver.h"
 
-const QString CDebug::expanding = "Expanding...\0";
-const QString CDebug::na        = "n/a...\0";
+const std::string CDebug::expanding = "Expanding...";
+const std::string CDebug::na        = "n/a...";
 
-CDebug::CDebug(HRD inst, TDbgIntf *dbgftable, QObject *parent)
-    : CDebugRoot{parent},
+CDebug::CDebug(HRD inst, TDbgIntf *dbgftable)
+    : CDebugRoot(),
     inInteractiveExp(false),
     m_survey(new CSurvey(this)),
     m_qsurvey(new CQSurvey(this)),
@@ -136,7 +136,7 @@ CStackInfo* CDebug::GetStackInfo (void)
 
 CSurvey* CDebug::GetSurvey(void)
 {
-    return m_survey.data();
+    return m_survey.get();
 }
 
 int CDebug::GetStackCount()
@@ -157,7 +157,7 @@ int CDebug::FindStackIndex(RSLSTACK st)
     return -1;
 }
 
-iter_watch CDebug::FindSWatch (const QString &str, RSLSTACK st, RSLPROC proc)
+iter_watch CDebug::FindSWatch (const std::string &str, RSLSTACK st, RSLPROC proc)
 {
     for(iter_watch  i = m_survey->begin(); i != m_survey->end(); ++i)
     {
@@ -168,7 +168,7 @@ iter_watch CDebug::FindSWatch (const QString &str, RSLSTACK st, RSLPROC proc)
     return m_survey->end();
 }
 
-iter_watch CDebug::FindQWatch (const QString &str, RSLSTACK st, RSLPROC proc)
+iter_watch CDebug::FindQWatch (const std::string &str, RSLSTACK st, RSLPROC proc)
 {
     for(iter_watch  i = m_qsurvey->begin(); i != m_qsurvey->end(); ++i)
     {
@@ -179,7 +179,7 @@ iter_watch CDebug::FindQWatch (const QString &str, RSLSTACK st, RSLPROC proc)
     return m_qsurvey->end();
 }
 
-iter_watch CDebug::FindLocal(const QString &str, RSLSTACK st, RSLPROC proc)
+iter_watch CDebug::FindLocal(const std::string &str, RSLSTACK st, RSLPROC proc)
 {
     for(iter_watch  i = m_locals->begin(); i != m_locals->end(); ++i)
     {
@@ -310,9 +310,9 @@ int CDebug::GetLocalVarPos(DisplayVar* var)
     return -1;
 }
 
-QString CDebug::GetProcName (RSLSTACK st)
+std::string CDebug::GetProcName (RSLSTACK st)
 {
-    QString name;
+    std::string name;
     int index = FindStackIndex(st);
 
     if(index != -1)
@@ -321,7 +321,7 @@ QString CDebug::GetProcName (RSLSTACK st)
     return name;
 }
 
-QString CDebug::GetCurModuleName(int index)
+std::string CDebug::GetCurModuleName(int index)
 {
     if(GetStackCount() > 0)
     {
@@ -332,11 +332,11 @@ QString CDebug::GetCurModuleName(int index)
             if(index == -1)
                 _index = m_index;
 
-            return QString(m_stackinfo[_index]->modname);
+            return m_stackinfo[_index]->modname;
         }
 
         if(m_curmod == (RSLMODULE)NULL || m_curmod == (RSLMODULE)-1)
-            return QString(m_stackinfo[m_index]->modname);
+            return m_stackinfo[m_index]->modname;
         else
         {
             RSLMODULE  curhmod = NULL;
@@ -360,11 +360,11 @@ QString CDebug::GetCurModuleName(int index)
                 }
             }
 
-            return QString(modname);
+            return std::string(modname);
         }
     }
 
-    return QString("Unknown module");
+    return std::string("Unknown module");
 }
 
 RSLSTACK CDebug::GetStackAt(int index)
@@ -443,17 +443,17 @@ void CDebug::UpdateDbgInfo()
 
 CLocals* CDebug::GetLocals()
 {
-    return m_locals.data();
+    return m_locals.get();
 }
 
 CQSurvey* CDebug::GetQSurvey()
 {
-    return m_qsurvey.data();
+    return m_qsurvey.get();
 }
 
 Saver *CDebug::GetSaver()
 {
-    return m_dataSaver.data();
+    return m_dataSaver.get();
 }
 
 void CDebug::UpdateVariables()
@@ -500,9 +500,9 @@ void CDebug::UpdateQSurvey()
     char       value[MAX_VALUE];
     RSLEXPCTX  exp;
 
-    QByteArray str_unknown;
-    QByteArray str_error;
-    QByteArray str_cannoteval;
+    std::string str_unknown;
+    std::string str_error;
+    std::string str_cannoteval;
 
     str_unknown = "unknown";
     str_error = "error";
@@ -515,7 +515,7 @@ void CDebug::UpdateQSurvey()
             exp       = NULL;
             is_lvalue = -1;
 
-            do_ParseExp((*i)->proc, (*i)->str_name.data(), &is_lvalue, &exp);
+            do_ParseExp((*i)->proc, (*i)->str_name.c_str(), &is_lvalue, &exp);
 
             (*i)->exp       = exp;
             (*i)->is_lvalue = is_lvalue != 0;
@@ -643,7 +643,7 @@ TBpData* CDebug::FindBPbyKey (unsigned long key)
     return NULL;
 }
 
-bool CDebug::AddSWatch(QByteArray str, RSLSTACK st, RSLPROC proc, QByteArray curprocname, RSLMODULE curmodule, bool isLvalue)
+bool CDebug::AddSWatch(std::string str, RSLSTACK st, RSLPROC proc, std::string curprocname, RSLMODULE curmodule, bool isLvalue)
 {
     iter_watch i = FindSWatch(str, st, proc);
 
@@ -670,7 +670,7 @@ bool CDebug::DelSwatch(DisplayVar *var)
     return true;
 }
 
-bool CDebug::AddQWatch(QByteArray str, RSLSTACK st, RSLPROC proc, QByteArray curprocname, RSLMODULE curmodule)
+bool CDebug::AddQWatch(std::string str, RSLSTACK st, RSLPROC proc, std::string curprocname, RSLMODULE curmodule)
 {
     iter_watch  i = FindQWatch(str , st, proc);
 
@@ -691,7 +691,7 @@ bool CDebug::AddQWatch(QByteArray str, RSLSTACK st, RSLPROC proc, QByteArray cur
     return true;
 }
 
-bool CDebug::DelQWatch (QString str)
+bool CDebug::DelQWatch (std::string str)
 {
     return true;
 }
@@ -741,7 +741,7 @@ HRD CDebug::GetInst()
     return m_inst;
 }
 
-QString CDebug::GetError()
+std::string CDebug::GetError()
 {
     return m_error;
 }

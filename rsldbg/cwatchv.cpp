@@ -1,8 +1,7 @@
 #include "cwatchv.h"
 #include "cdebug.h"
 #include "lf/dbgexception.h"
-#include <QMessageBox>
-#include <QApplication>
+#include "dbglog.h"
 
 CWatchV::CWatchV(CDebug *pParent)
 {
@@ -32,7 +31,7 @@ void CWatchV::operator=(vector <DisplayVar* >* arg)
     }
 }
 
-SpIter CWatchV::FindWatchV (const QString &str)
+SpIter CWatchV::FindWatchV (const std::string &str)
 {
     SpIter i;
     for(i=begin(); i!=end(); ++i){
@@ -82,7 +81,7 @@ DisplayVar* CWatchV::CreateFakeChildrensItem (RSLVALUE value, int curDepth)
     {
         e;
 #ifdef _DEBUG
-        QMessageBox::critical(qApp->topLevelWidgets()[0], "Error", e.what());
+        DBG_LOGW("Error: %s", e.what());
         //AfxMessageBox (e.what ());
 #endif
     }
@@ -90,7 +89,7 @@ DisplayVar* CWatchV::CreateFakeChildrensItem (RSLVALUE value, int curDepth)
     return var;
 }
 
-bool CWatchV::AddWatchV (const QByteArray &str)
+bool CWatchV::AddWatchV (const std::string &str)
 {
     if(end() == FindWatchV(str))
     {
@@ -110,7 +109,7 @@ bool CWatchV::AddWatchV (const QByteArray &str)
     char str_type[MAX_TYPENAME];
 
     int is_lvalue = -1;
-    bool rv = m_parent->do_ParseExp(proc, str.data()/*.data()*/, &is_lvalue, &exp);
+    bool rv = m_parent->do_ParseExp(proc, str.c_str()/*.data()*/, &is_lvalue, &exp);
 
     if(!rv || !exp)
         return false;

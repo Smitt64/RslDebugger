@@ -1,10 +1,10 @@
 #ifndef CWATCHV_H
 #define CWATCHV_H
 
-//#include "cdebug.h"
 #include "displayvar.h"
 #include <loki/SmartPtr.h>
 #include <vector>
+#include <string>
 
 typedef Loki::SmartPtr<DisplayVar, Loki::RefLinked> SpVarPtrType;
 #define SpIter std::vector<SpVarPtrType>::iterator
@@ -30,7 +30,7 @@ public:
     ~CWatchV();
     void operator = (std::vector<DisplayVar*>* arg);
 
-    bool AddWatchV (const QByteArray &str);
+    bool AddWatchV (const std::string &str);
     bool DelWatchV(int index);
     bool ExpandV(int index, RSLSTACK _st = nullptr);
     bool CollapseV(int);
@@ -43,7 +43,7 @@ protected:
     using std::vector<SpVarPtrType>::swap;
 
 private:
-    SpIter FindWatchV (const QString &str);
+    SpIter FindWatchV (const std::string &str);
 };
 
 typedef CWatchV::iterator iter_watch;

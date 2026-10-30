@@ -1,7 +1,7 @@
 #ifndef SAVER_H
 #define SAVER_H
 
-#include <QObject>
+#include <vector>
 
 class CDebug;
 enum SaverCommands
@@ -22,7 +22,7 @@ public:
 class Saver
 {
 public:
-    typedef QVector<SaverBase*>::iterator iterator;
+    typedef std::vector<SaverBase*>::iterator iterator;
     Saver(CDebug* dbg_);
     ~Saver();
 
@@ -37,7 +37,7 @@ public:
     }
 private:
     CDebug* dbg;
-    QVector<SaverBase*> saveInstances;
+    std::vector<SaverBase*> saveInstances;
 };
 
 #endif // SAVER_H

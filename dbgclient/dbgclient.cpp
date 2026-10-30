@@ -252,10 +252,18 @@ void DbgClient::write(const quint16 &action, const QByteArray &data)
     m_pSocket->waitForBytesWritten();
 }
 
-void DbgClient::execContinue(int traceLog)
+void DbgClient::execContinue(int traceLog, bool skipSameLine, int maxSteps)
 {
     QJsonObject obj;
     obj["traceLog"] = traceLog;
+
+    // Пакетный шаг: поля опциональны, старый сервер их просто игнорирует.
+    if (skipSameLine)
+    {
+        obj["skip_same_line"] = true;
+        if (maxSteps > 0)
+            obj["max_steps"] = maxSteps;
+    }
 
     write(DBG_REQUEST_EXECCONTNUE_JSON, QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }

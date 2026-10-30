@@ -1,23 +1,24 @@
 #ifndef DISPLAYVAR_H
 #define DISPLAYVAR_H
 
-#include <QObject>
 #include "cdebugroot.h"
+#include <string>
 
 #define MAX_TYPENAME 100
 #define MAX_VALUE    100
 #define MAX_NAME     100
 
+// str_* - сырые строки рантайма (ANSI/OEM байты, не UTF-8).
 class DisplayVar
 {
 public:
     DisplayVar(CDebugRoot* pDebug);
     virtual ~DisplayVar();
 
-    QByteArray str_name;
-    QByteArray str_type;
-    QByteArray str_value;
-    QByteArray str_proc;
+    std::string str_name;
+    std::string str_type;
+    std::string str_value;
+    std::string str_proc;
     unsigned char  depth;
     bool           is_object;
     bool           is_expanded;
@@ -37,7 +38,7 @@ public:
     bool IsStringLikeEditable () const;
 
 private:
-    QByteArray str_error;
+    std::string str_error;
 };
 
 #endif // DISPLAYVAR_H

@@ -1,28 +1,28 @@
 #ifndef TYPES_H
 #define TYPES_H
 
-#include <QSharedPointer>
 #include "bp_data.h"
 #include "rsl/dbgintf.h"
 #include "tracemsg.h"
 #include <loki/SmartPtr.h>
 #include <vector>
-//#include <string>
+#include <string>
 
+// Строки - сырые байты рантайма (ANSI/OEM), не UTF-8.
 typedef struct tagTStackInfo
 {
     RSLSTACK	st;
     RSLPROC		proc;
     RSLSTMT		stmt;
     RSLMODULE	mod;
-    QByteArray		procname;
-    QByteArray		modname;
+    std::string		procname;
+    std::string		modname;
     int			offs, len;
 } TStackInfo;
 
 typedef struct tagTModuleInfo
 {
-    QByteArray		name;
+    std::string		name;
     int			type;
     RSLMODULE	hmod;
 } TModuleInfo;
@@ -32,7 +32,7 @@ typedef Loki::SmartPtr<TStackInfo, Loki::RefLinked> elem_stackinfo;
 typedef Loki::SmartPtr<TModuleInfo, Loki::RefLinked> elem_moduleinfo;
 typedef Loki::SmartPtr<TTraceMsg, Loki::RefLinked> elem_tracemsg;
 
-typedef	QByteArray elem_qwatch;
+typedef	std::string elem_qwatch;
 
 typedef	std::vector<elem_bpdata>    CBPData;
 typedef	std::vector<elem_stackinfo> CStackInfo;

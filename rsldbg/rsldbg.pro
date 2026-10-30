@@ -1,6 +1,7 @@
-QT += core gui network
-
-greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
+# rsldbg.dll больше не использует Qt (чистый Win32 + std + nlohmann/json).
+# qmake всё ещё нужен как система сборки, поэтому Qt просто отключаем.
+CONFIG -= qt
+QT =
 
 TEMPLATE = lib
 DEFINES += RSLDBG_LIBRARY TOOLSRUNTIME_STATIC_LINK
@@ -20,6 +21,7 @@ SOURCES += \
     cqsurvey.cpp \
     csurvey.cpp \
     cwatchv.cpp \
+    dbglog.cpp \
     dbgserver.cpp \
     dbgsettings.cpp \
     displayvar.cpp \
@@ -29,12 +31,10 @@ SOURCES += \
     remexpressions.cpp \
     rsldbg.cpp \
     saver.cpp \
+    strconv.cpp \
     server/breakpointevent.cpp \
     server/dbgannouncer.cpp \
-    server/dbgserverbase.cpp \
-    server/serveractionevent.cpp \
-    server/tools.cpp \
-    server/updatedbginfoevent.cpp
+    server/dbgserverbase.cpp
 
 HEADERS += \
     cdebug.h \
@@ -45,6 +45,7 @@ HEADERS += \
     csurvey.h \
     cwatchv.h \
     dbg.h \
+    dbglog.h \
     dbgserver.h \
     dbgserverproto.h \
     dbgsettings.h \
@@ -59,12 +60,15 @@ HEADERS += \
     rsldbg_global.h \
     rsldbg.h \
     saver.h \
+    strconv.h \
     server/breakpointevent.h \
     server/dbgannouncer.h \
     server/dbgserverbase.h \
     server/serveractionevent.h \
+    server/serverevent.h \
     server/updatedbginfoevent.h \
-    tracemsg.h
+    tracemsg.h \
+    vendor/json.hpp
 
 INCLUDEPATH += $$PWD/../rstools/include $$PWD/../rstools/include/panel $$PWD/../rstools/include/bedit
 

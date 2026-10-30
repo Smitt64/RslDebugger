@@ -5,12 +5,8 @@
 #include "lf/bp_data.h"
 #include "lf/types.h"
 #include "cwatchv.h"
-#include <QEvent>
-
-#define	MSG_BREAKPOINT (QEvent::User + 1)
-#define MSG_FINISH     (QEvent::User + 2)
-#define MSG_TRACE      (QEvent::User + 3)
-#define MSG_EDITWATCH  (QEvent::User + 4)
+#include <string>
+#include <memory>
 
 typedef struct
 {
@@ -48,9 +44,8 @@ class CLocals;
 class Saver;
 class CDebug : public CDebugRoot
 {
-    Q_OBJECT
 public:
-    CDebug(HRD inst, TDbgIntf*  dbgftable, QObject *parent = nullptr);
+    CDebug(HRD inst, TDbgIntf*  dbgftable);
     virtual ~CDebug();
 
     void GetRemoteVersion();
@@ -59,8 +54,8 @@ public:
 
     int m_nVerHi;
     short int m_nVerLo;
-    static const QString na;
-    static const QString expanding;
+    static const std::string na;
+    static const std::string expanding;
     bool inInteractiveExp;
 
     iter_bpdata FindBP(TBpData*);
@@ -82,17 +77,17 @@ public:
     int FindStackIndex(RSLSTACK st);
     int GetStackCount();
 
-    iter_watch FindSWatch(const QString &str, RSLSTACK st, RSLPROC proc);
-    iter_watch FindQWatch (const QString &str, RSLSTACK st, RSLPROC proc);
-    iter_watch FindLocal(const QString &str, RSLSTACK st, RSLPROC proc);
+    iter_watch FindSWatch(const std::string &str, RSLSTACK st, RSLPROC proc);
+    iter_watch FindQWatch (const std::string &str, RSLSTACK st, RSLPROC proc);
+    iter_watch FindLocal(const std::string &str, RSLSTACK st, RSLPROC proc);
     DisplayVar* FindRootItem(DisplayVar* var, BOOL surv);
     RSLMODULE GetCurModule(int index = -1);
     RSLSTMT GetCurStatement(int* offs, int* len, int index = -1);
 
     int GetWatchVarPos(DisplayVar* var);
     int GetLocalVarPos(DisplayVar* var);
-    QString GetProcName (RSLSTACK st);
-    QString GetCurModuleName(int index = -1);
+    std::string GetProcName (RSLSTACK st);
+    std::string GetCurModuleName(int index = -1);
     RSLSTACK GetStackAt(int index);
     int GetIndex();
     void SetIndex (int index = 0);
@@ -107,10 +102,10 @@ public:
     void SetCurModule(RSLMODULE mod);
     RSLMODULE GetActiveModule(void);
 
-    bool AddSWatch(QByteArray str, RSLSTACK st, RSLPROC proc, QByteArray curprocname, RSLMODULE curmodule, bool isLvalue);
+    bool AddSWatch(std::string str, RSLSTACK st, RSLPROC proc, std::string curprocname, RSLMODULE curmodule, bool isLvalue);
     bool DelSwatch(DisplayVar *var);
-    bool AddQWatch(QByteArray str, RSLSTACK st, RSLPROC proc, QByteArray curprocname, RSLMODULE curmodule);
-    bool DelQWatch(QString);
+    bool AddQWatch(std::string str, RSLSTACK st, RSLPROC proc, std::string curprocname, RSLMODULE curmodule);
+    bool DelQWatch(std::string);
 
     BP_TYPE GetBPType(int index);
     int GetBPOffs(int index);
@@ -122,16 +117,15 @@ public:
     void SetInst(HRD inst);
     TDbgIntf* GetDbgFTable();
     HRD GetInst();
-    QString GetError();
+    std::string GetError();
     int GetStatementLine(int offs, int len, RSLMODULE mod);
-    //int GetRealIndex(int _virtual, WNDENUM wnd);
 
 private:
     CStackInfo m_stackinfo;
-    QScopedPointer<CSurvey> m_survey;
-    QScopedPointer<CQSurvey> m_qsurvey;
-    QScopedPointer<CLocals> m_locals;
-    QScopedPointer<Saver> m_dataSaver;
+    std::unique_ptr<CSurvey> m_survey;
+    std::unique_ptr<CQSurvey> m_qsurvey;
+    std::unique_ptr<CLocals> m_locals;
+    std::unique_ptr<Saver> m_dataSaver;
     int m_index;
     CBPData m_bpdata;
     unsigned long bpKey;

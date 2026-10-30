@@ -1,7 +1,7 @@
 #ifndef TRACEMSG_H
 #define TRACEMSG_H
 
-#include <QObject>
+#include <string>
 
 enum MSGLEVEL
 {
@@ -16,8 +16,9 @@ enum MSGLEVEL
     MSGLEVEL_USERCRYTICAL = 7
 };
 
+// msg - сырая строка рантайма (ANSI/OEM байты, не UTF-8).
 typedef struct tagTTraceMsg{
-    QString msg;
+    std::string msg;
     MSGLEVEL level;
 } TTraceMsg;
 

@@ -1,37 +1,36 @@
 #ifndef DBGSETTINGS_H
 #define DBGSETTINGS_H
 
-#include <QString>
-#include <QStringList>
+#include <string>
+#include <vector>
 
-// Режимы запуска/подключения клиента отладки (rsldbg.ini, секция [debug],
-// ключ client_mode = gui | agent | gui_remote).
+// Режим клиента, заданный ведущим приложением (rsledit - GUI, debugbreak - agent).
+// Имеет приоритет над ini до первой перезагрузки настроек.
 enum DbgClientMode
 {
-    DbgClientGui = 0,   // сервер сам запускает локальный GUI (rsldbgclnt.exe)
-    DbgClientAgent,     // клиент не запускается, только UDP-анонсы; bind 127.0.0.1
-    DbgClientGuiRemote  // клиент не запускается, UDP-анонсы; bind 0.0.0.0 (удалённый GUI)
+    DbgClientGui,       // слушать 127.0.0.1:0, запустить rsldbgclnt.exe
+    DbgClientAgent,     // слушать 0.0.0.0:0, ничего не запускать, анонсировать по UDP
+    DbgClientGuiRemote  // слушать 0.0.0.0:0, запустить rsldbgclnt.exe (удалённый GUI)
 };
 
 struct DbgSettings
 {
     DbgClientMode clientMode = DbgClientGui;
-    bool announceBroadcast = true; // announce = broadcast | off
-    bool announceTitle = true;     // включать ли заголовок окна хоста в анонс
-    QStringList announceTo;        // announce_to = ip1; ip2 - юникаст-получатели анонсов
-    QString authToken;             // auth_token: фиксированный токен (для gui_remote),
-                                   // пусто - случайный GUID на каждую сессию
+    bool announceBroadcast = false;
+    bool announceTitle = true;
+    std::vector<std::string> announceTo; // IPv4-адреса (UTF-8, фактически ASCII)
+    std::string authToken;               // UTF-8
 };
 
-// Настройки читаются из rsldbg.ini рядом с rsldbg.dll при первом обращении.
-// Возвращается копия - безопасно для вызовов из рабочих потоков сервера.
+// Настройки rsldbg.ini лежат рядом с rsldbg.dll. Значения ini читаются как UTF-8
+// (как и раньше при QSettings IniFormat). Результаты кэшируются; dbgReloadSettings
+// сбрасывает кэш. dbgSetClientMode переопределяет clientMode до следующего reload.
 DbgSettings dbgSettings();
-
-// Перечитать ini (например, после правки файла вживую).
 void dbgReloadSettings();
-
-// Программное перекрытие режима (RslDbgSetClientMode из экспорта dll);
-// переживает dbgReloadSettings().
 void dbgSetClientMode(DbgClientMode mode);
+
+// Путь к каталогу rsldbg.dll (UTF-8, без завершающего слеша) - нужен и
+// для поиска rsldbgclnt.exe, и для расположения rsldbg.ini.
+std::string dbgDllDir();
 
 #endif // DBGSETTINGS_H

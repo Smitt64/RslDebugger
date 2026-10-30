@@ -1,5 +1,4 @@
 #include "dbgserver.h"
-#include "qdebug.h"
 #include "server/updatedbginfoevent.h"
 #include "dbgsettings.h"
 #include "server/breakpointevent.h"
@@ -10,90 +9,49 @@
 #include "csurvey.h"
 #include "clocals.h"
 #include "cwatchv.h"
-#include <windows.h>
-#include <QApplication>
-#include <QLibrary>
 #include "rsldbg.h"
-#include <QThreadPool>
-#include <QCoreApplication>
-#include <QThread>
-
-// Прокачка событий во время ожидания в Rsldbg::process(). Сигналы из рабочего
-// потока сервера до QEventLoop не доходят (объект сервера живёт в QThread,
-// который никогда не запускается), поэтому ждём опросом атомарных флагов.
-static void dbgPumpEvents()
-{
-    QCoreApplication *app = QCoreApplication::instance();
-
-    if (app && QThread::currentThread() == app->thread())
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-    else
-        QThread::msleep(10);
-}
-
-Q_GLOBAL_STATIC(Rsldbg, rsldbg)
-
-Qt::HANDLE ActiveBeforeDbg()
-{
-    return rsldbg->activeBeforeDbg();
-}
+#include "dbglog.h"
+#include <windows.h>
+#include <thread>
 
 Rsldbg *rslDbgObj()
 {
-    return rsldbg;
+    // Статическая инициализация потокобезопасна начиная с C++11 (magic statics).
+    static Rsldbg *inst = new Rsldbg();
+    return inst;
+}
+
+Qt::HANDLE ActiveBeforeDbg()
+{
+    return rslDbgObj()->activeBeforeDbg();
 }
 
 // ------------------------------------------------------------------------------
 
 Rsldbg::Rsldbg() :
-    m_pApp(nullptr),
-    argv(nullptr),
     is_inited(false),
     is_ui(false),
-    m_CurDbg(nullptr)
+    m_ActiveBeforeDbg(nullptr),
+    m_CurDbg(nullptr),
+    m_RsLeng(nullptr)
 {
-    QStringList arguments = QApplication::arguments();
-
-    int argc = arguments.count();
-
-    argv = new char*[argc];
-    for (int i = 0; i < argc; i++)
+    HMODULE hLeng = LoadLibraryW(L"rsscript.dll");
+    m_RsLeng = hLeng;
+    if (hLeng)
     {
-        QString element = arguments.at(i);
-        argv[i] = new char[element.size() + 1];
-        strcpy(argv[i], element.toStdString().c_str());
+        RslGetModuleFile = (tRslGetModuleFile)GetProcAddress(hLeng, "RslGetModuleFile");
+        RslGetModuleFromStack = (tRslGetModuleFromStack)GetProcAddress(hLeng, "RslGetModule");
+        RslGetProcNameFromStack = (tRslGetProcNameFromStack)GetProcAddress(hLeng, "RslGetProcName");
+        RslGetStatementFromStack = (tRslGetStatementFromStack)GetProcAddress(hLeng, "RslGetStatement");
+        RslGetStatementPos = (tRslGetStatementPos)GetProcAddress(hLeng, "RslGetStatementPos");
+        RslModuleForStatement = (tRslModuleForStatement)GetProcAddress(hLeng, "RslModuleForStatement");
     }
-
-    m_RsLeng.reset(new QLibrary("rsscript.dll"));
-    if (m_RsLeng->load())
-    {
-        RslGetModuleFile = (tRslGetModuleFile)m_RsLeng->resolve("RslGetModuleFile");
-        RslGetModuleFromStack = (tRslGetModuleFromStack)m_RsLeng->resolve("RslGetModule");
-        RslGetProcNameFromStack = (tRslGetProcNameFromStack)m_RsLeng->resolve("RslGetProcName");
-        RslGetStatementFromStack = (tRslGetStatementFromStack)m_RsLeng->resolve("RslGetStatement");
-        RslGetStatementPos = (tRslGetStatementPos)m_RsLeng->resolve("RslGetStatementPos");
-        RslModuleForStatement = (tRslModuleForStatement)m_RsLeng->resolve("RslModuleForStatement");
-        //RslGetStatementPosEx = (tRslGetStatementPosEx)m_RsLeng->resolve("RslGetStatementPosEx");
-    }
-
-    if (qApp)
-        m_pApp = qApp;
-    else
-        m_pApp = new QApplication(argc, argv);
-
-    m_Thread.reset(new QThread());
-    //m_pApp.reset();
 }
 
 Rsldbg::~Rsldbg()
 {
-    //if (m_pApp)
-        //delete m_pApp;
-
-    for (int i = 0; i < m_pApp->arguments().count(); i++)
-        delete[] argv[i];
-
-    delete[] argv;
+    if (m_RsLeng)
+        FreeLibrary((HMODULE)m_RsLeng);
 }
 
 Qt::HANDLE Rsldbg::activeBeforeDbg()
@@ -103,7 +61,7 @@ Qt::HANDLE Rsldbg::activeBeforeDbg()
 
 int Rsldbg::size()
 {
-    return m_Dbg.size();
+    return (int)m_Dbg.size();
 }
 
 HDBG Rsldbg::init(HRD inst,TDbgIntf * _dbg_ftable)
@@ -116,8 +74,7 @@ HDBG Rsldbg::init(HRD inst,TDbgIntf * _dbg_ftable)
         is_ui = true;
     }
 
-    QVector<SpDebugPtrType>::iterator i;
-    for(i = m_Dbg.begin(); i != m_Dbg.end(); ++i)
+    for (std::vector<SpDebugPtrType>::iterator i = m_Dbg.begin(); i != m_Dbg.end(); ++i)
     {
         if ((*i)->GetInst() == inst)
             return (HDBG)GetImpl (*i);
@@ -132,8 +89,9 @@ HDBG Rsldbg::init(HRD inst,TDbgIntf * _dbg_ftable)
     new_dbg->SetChildsLimit(100);
     //srv->m_curdbg = new_dbg;
 
-    srv->moveToThread(m_Thread.data());
-    QThreadPool::globalInstance()->start(srv);
+    // Сервер работает в собственном потоке (раньше - QThreadPool).
+    // Поток отсоединяем: живёт до завершения отладочной сессии (run()).
+    std::thread([srv] { srv->run(); }).detach();
 
     return (HDBG)new_dbg;
 }
@@ -141,14 +99,14 @@ HDBG Rsldbg::init(HRD inst,TDbgIntf * _dbg_ftable)
 void Rsldbg::done(HDBG hDBG)
 {
     // CDebug ниже удаляется из m_Dbg (SmartPtr уничтожает объект), а сервер
-    // продолжает жить в пуле потоков. Обнуляем m_curdbg, чтобы поздние события
+    // продолжает жить в своём потоке. Обнуляем m_curdbg, чтобы поздние события
     // из очереди сервера не упали на уже освобождённом объекте.
     CDebug *finishedDbg = (CDebug*)hDBG;
-    DbgServer *finishedSrv = m_Servers.value(finishedDbg, nullptr);
-    if (finishedSrv)
+    std::map<CDebug*, DbgServer*>::iterator si = m_Servers.find(finishedDbg);
+    if (si != m_Servers.end())
     {
-        finishedSrv->m_curdbg = nullptr;
-        m_Servers.remove(finishedDbg);
+        si->second->m_curdbg = nullptr;
+        m_Servers.erase(si);
     }
 
     if (m_Dbg.size() == 1)
@@ -156,8 +114,7 @@ void Rsldbg::done(HDBG hDBG)
         is_ui = false;
 
         CDebug* aDBG = (CDebug*)hDBG;
-        QVector<SpDebugPtrType>::iterator i;
-        for(i = m_Dbg.begin(); i != m_Dbg.end(); ++i)
+        for (std::vector<SpDebugPtrType>::iterator i = m_Dbg.begin(); i != m_Dbg.end(); ++i)
         {
             if ((*i)->GetInst() == aDBG->GetInst())
             {
@@ -171,12 +128,11 @@ void Rsldbg::done(HDBG hDBG)
     else if (m_Dbg.size() > 1)
     {
         CDebug* aDBG = (CDebug* )hDBG;
-        QVector<SpDebugPtrType>::iterator i;
 
         int ctr = 0;
         int cur_ctr = 0;
 
-        for(i = m_Dbg.begin(); i != m_Dbg.end(); ++i)
+        for (std::vector<SpDebugPtrType>::iterator i = m_Dbg.begin(); i != m_Dbg.end(); ++i)
         {
             if ((*i)->GetInst() == aDBG->GetInst())
             {
@@ -221,17 +177,14 @@ int Rsldbg::process(HDBG hDBG, TBpData *data)
     srv->setIsNewDebug(pDebug != srv->m_curdbg);
     srv->m_curdbg = pDebug;
 
-    //ReplyMessage((LRESULT)TRUE);
     if (!srv->isConnected())
     {
-        // QEventLoop + сигналы started/finished здесь не работают: сигнал
-        // started эмитится из потока пула, а объект сервера живёт в QThread,
-        // который никогда не запускается, и queued-доставка не происходит
-        // (проверено: loop.exec() висит после "Handshake sent").
-        // Ждём опросом атомарного флага, который выставляется из run()
-        // сервера через DirectConnection.
-        while (!srv->isConnected() && !srv->m_finishedFlag.loadAcquire())
-            dbgPumpEvents();
+        // Ждём подключения клиента опросом атомарного флага, который
+        // выставляется из run() сервера (сигналов Qt больше нет; GUI-помп
+        // сообщений хоста здесь удалён - во время ожидания клиента хост
+        // "заморожен", так же, как и на паузе отладки).
+        while (!srv->isConnected() && !srv->m_finishedFlag.load())
+            Sleep(10);
 
         if (!srv->isConnected())
             result = 0;
@@ -254,8 +207,8 @@ void Rsldbg::trace(HDBG hinst,const char *str)
 {
     // Трассировочные сообщения в UI больше не выводятся (встроенный
     // интерфейс удалён), колбэк оставлен для совместимости с dbgintf.
-    Q_UNUSED(hinst);
-    Q_UNUSED(str);
+    (void)hinst;
+    (void)str;
 }
 
 CDebug *Rsldbg::currentDebug()
@@ -265,13 +218,12 @@ CDebug *Rsldbg::currentDebug()
 
 void Rsldbg::stoploop()
 {
-    //m_EventLoop.quit();
 }
 
 void Rsldbg::remModule(HDBG hinst, RSLMODULE hmod)
 {
     CDebug* pDebug = (CDebug* )hinst;
-    QVector<SpDebugPtrType>::iterator i;
+    std::vector<SpDebugPtrType>::iterator i;
     for(i = m_Dbg.begin(); i != m_Dbg.end(); ++i)
     {
         if ((*i)->GetInst() == pDebug->GetInst())
@@ -327,23 +279,23 @@ bool Rsldbg::init_ui()
 
 static int RSDBG DbgCount(void)
 {
-    return rsldbg->size();
+    return rslDbgObj()->size();
 }
 
 static HDBG RSDBG DbgInit(HRD inst, TDbgIntf *_dbg_ftable)
 {
-    return rsldbg->init(inst, _dbg_ftable);
+    return rslDbgObj()->init(inst, _dbg_ftable);
 }
 
 static void RSDBG DbgDone(HDBG hDBG)
 {
-    rsldbg->done(hDBG);
-    qDebug() << "DbgDone";
+    rslDbgObj()->done(hDBG);
+    DBG_LOGI("DbgDone");
 }
 
 static int RSDBG DbgBreak (HDBG hDBG, uint32 data)
 {
-    return rsldbg->DbgBreak(hDBG, data);
+    return rslDbgObj()->DbgBreak(hDBG, data);
 }
 
 static void RSDBG DbgTrace (HDBG hinst,const char *str)
@@ -353,7 +305,7 @@ static void RSDBG DbgTrace (HDBG hinst,const char *str)
     if (pDebug && pDebug->NeedConvert())
         ; // !!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-    rsldbg->trace(hinst, str);
+    rslDbgObj()->trace(hinst, str);
 }
 
 static int RSDBG DbgVersion(void)
@@ -375,7 +327,7 @@ static void RSDBG DbgRemModule(HDBG hinst, RSLMODULE hmod)
         return;
 
     pDebug->GetSaver()->Command (CMD_MODULE_UNLOAD, reinterpret_cast<void*>(hmod));
-    rsldbg->remModule(hinst, hmod);
+    rslDbgObj()->remModule(hinst, hmod);
 }
 
 static void RSDBG DbgSetMode(HDBG hInst, int mode)
@@ -390,44 +342,33 @@ static void RSDBG DbgSetMode(HDBG hInst, int mode)
 
 char *RslGetModuleFile(Qt::HANDLE mod, int *isBtrStream)
 {
-    return rsldbg->RslGetModuleFile(mod, isBtrStream);
+    return rslDbgObj()->RslGetModuleFile(mod, isBtrStream);
 }
 
 Qt::HANDLE RslGetModuleFromStack(Qt::HANDLE stack)
 {
-    return rsldbg->RslGetModuleFromStack(stack);
+    return rslDbgObj()->RslGetModuleFromStack(stack);
 }
 
 char *RslGetProcNameFromStack(Qt::HANDLE stack)
 {
-    return rsldbg->RslGetProcNameFromStack(stack);
+    return rslDbgObj()->RslGetProcNameFromStack(stack);
 }
 
 Qt::HANDLE RslGetStatementFromStack(Qt::HANDLE stack)
 {
-    return rsldbg->RslGetStatementFromStack(stack);
+    return rslDbgObj()->RslGetStatementFromStack(stack);
 }
 
 Qt::HANDLE RslModuleForStatement(Qt::HANDLE hst)
 {
-    return rsldbg->RslModuleForStatement(hst);
+    return rslDbgObj()->RslModuleForStatement(hst);
 }
 
 void RslGetStatementPos(Qt::HANDLE hst, int *offs, int *len)
 {
-    rsldbg->RslGetStatementPos(hst, offs, len);
+    rslDbgObj()->RslGetStatementPos(hst, offs, len);
 }
-
-/*int RslGetModuleLine(Qt::HANDLE module, int offs, int len)
-{
-    int      line = -1;
-    int      realoffs, reallen;
-    RSLSTMT  stmt;
-    //RslGetStatementPos(hst, offs, len);
-    rsldbg->currentDebug()->do_GetStatementOfPos((RSLMODULE)module, offs, len, &realoffs, &reallen, &stmt, &line);
-
-    return line;
-}*/
 
 // ------------------------------------------------------------------------------
 

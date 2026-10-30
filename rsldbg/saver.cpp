@@ -1,4 +1,6 @@
 #include "saver.h"
+#include <algorithm>
+#include <functional>
 
 Saver::Saver(CDebug *dbg_)
 {

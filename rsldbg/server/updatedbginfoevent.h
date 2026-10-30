@@ -1,14 +1,16 @@
 #ifndef UPDATEDBGINFOEVENT_H
 #define UPDATEDBGINFOEVENT_H
 
-#include <QEvent>
+#include "serverevent.h"
+#include "../dbgserverproto.h"
 
-class UpdateDbgInfoEvent : public QEvent
+class UpdateDbgInfoEvent : public DbgServerEvent
 {
 public:
-    UpdateDbgInfoEvent(Qt::HANDLE data);
+    explicit UpdateDbgInfoEvent(Qt::HANDLE data)
+        : DbgServerEvent(MSG_UPDATEDBGINFO_EVENT), pData(data) {}
 
-    Qt::HANDLE data();
+    Qt::HANDLE data() { return pData; }
 
 private:
     Qt::HANDLE pData;

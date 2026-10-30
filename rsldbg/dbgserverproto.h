@@ -1,9 +1,17 @@
 #ifndef DBGSERVERPROTO_H
 #define DBGSERVERPROTO_H
 
-#ifndef IGNORE_INCLUDE
-#include <QObject>
-#include <QEvent>
+#include <stdint.h>
+#include <string.h>
+
+// rsldbg.dll больше не использует Qt. Этот заголовок общий с клиентами
+// (rsldbgclnt, rsldbgmcp), которые на Qt остаются: если Qt уже подключён,
+// его typedef'ы qint32/qint16/Qt::HANDLE действуют, иначе определяем свои
+// (бинарно идентичные: qint32 = int32_t, Qt::HANDLE = void*).
+#if !defined(QGLOBAL_H)
+typedef int32_t qint32;
+typedef int16_t qint16;
+namespace Qt { typedef void *HANDLE; }
 #endif
 
 #define RSLDBG_MAGIC "RSLDBG"
@@ -31,14 +39,18 @@
 // discover-запросов. Слушают GUI (диалог выбора сессии) и MCP-адаптер.
 #define RSLDBG_ANNOUNCE_PORT 51491
 
-#define	MSG_BREAKPOINT   (QEvent::User + 1)
-#define MSG_FINISH       (QEvent::User + 2)
-#define MSG_TRACE        (QEvent::User + 3)
-#define MSG_EDITWATCH    (QEvent::User + 4)
-#define	MSG_LOG          (QEvent::User + 5)
-
-#define	MSG_SERVER_EVENT        (QEvent::User + 6)
-#define	MSG_UPDATEDBGINFO_EVENT (QEvent::User + 7)
+// Типы внутренних сообщений сервера (были QEvent::User + n, значения
+// сохранены). По проводу не ходят - только очередь внутри процесса.
+enum DbgMsgType
+{
+    MSG_BREAKPOINT         = 1001,
+    MSG_FINISH             = 1002,
+    MSG_TRACE              = 1003,
+    MSG_EDITWATCH          = 1004,
+    MSG_LOG                = 1005,
+    MSG_SERVER_EVENT       = 1006,
+    MSG_UPDATEDBGINFO_EVENT = 1007
+};
 
 #define  EXECCONTNUE_STEP_OVER           1
 #define  EXECCONTNUE_STEP_INTO           2

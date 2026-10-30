@@ -261,7 +261,15 @@ QJsonArray McpServer::toolsList() const
                                   QStringLiteral("Wait for the next stop and return its snapshot (default false)"))},
                       {QStringLiteral("timeout_ms"),
                        schemaProp(QStringLiteral("integer"),
-                                  QStringLiteral("Wait timeout when wait=true, ms (default 30000)"))}},
+                                  QStringLiteral("Wait timeout when wait=true, ms (default 30000)"))},
+                      {QStringLiteral("skip_same_line"),
+                       schemaProp(QStringLiteral("boolean"),
+                                  QStringLiteral("step_over/step_into only: the server repeats the step "
+                                                 "automatically until the (module, line) position changes, "
+                                                 "without round trips - fast skipping of multi-line statements"))},
+                      {QStringLiteral("max_steps"),
+                       schemaProp(QStringLiteral("integer"),
+                                  QStringLiteral("Safety cap for skip_same_line (default 500)"))}},
                      QJsonArray{QStringLiteral("mode")})));
 
     tools.append(tool(QStringLiteral("rsl_wait_event"),
@@ -389,7 +397,13 @@ QJsonObject McpServer::callTool(const QString &name, const QJsonObject &args)
             return toolError(QStringLiteral("Unknown mode: %1 (run, step_over, step_into, step_out, abort)").arg(mode));
 
         m_Dbg->notifyContinueSent();
-        m_Dbg->execContinue(modes.value(mode));
+
+        // Пакетный шаг: сервер сам повторяет step_over/step_into, пока не
+        // сменится (модуль, строка) - экономим MCP-раундтрипы на шагах
+        // внутри одной строки/многострочного оператора.
+        const bool skipSameLine = args.value(QStringLiteral("skip_same_line")).toBool();
+        const int maxSteps = args.value(QStringLiteral("max_steps")).toInt(500);
+        m_Dbg->execContinue(modes.value(mode), skipSameLine, maxSteps);
 
         // wait=true: один tool call вместо пары rsl_continue + rsl_wait_event -
         // экономим целый MCP-раундтрип (модельное время дороже сетевого).

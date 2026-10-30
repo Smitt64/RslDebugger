@@ -64,7 +64,7 @@ bool CLocals::CollectLocals (const RSLSTACK _st, RSLSTACK* prevSt, bool instChan
             if (remFromStack > 0)
                 l_namesStack.erase (l_namesStack.end () - remFromStack, l_namesStack.end ());
 
-            l_namesStack.push_back ((*it)->str_name.toStdString());
+            l_namesStack.push_back ((*it)->str_name);
 
             if ((*it)->depth == l_curDepth && (*it)->is_expanded)
             {
@@ -82,7 +82,7 @@ bool CLocals::CollectLocals (const RSLSTACK _st, RSLSTACK* prevSt, bool instChan
                     if (remFromStack > 0)
                         l_namesTmpStack.erase (l_namesTmpStack.end () - remFromStack, l_namesTmpStack.end ());
 
-                    l_namesTmpStack.push_back ((*localsIter)->str_name.toStdString());
+                    l_namesTmpStack.push_back ((*localsIter)->str_name);
 
                     if (l_namesTmpStack == l_namesStack)
                     {

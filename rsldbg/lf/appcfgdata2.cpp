@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <io.h>
 #include <direct.h>
-#include <QObject>
+#include <string>
 #include <rsfname.h>
 #include <Shlobj.h>
 
@@ -19,8 +19,8 @@
 #include <Shlobj.h>
 #include <Shlwapi.h>
 
-static QString  RslProductName;
-static QString  RslProductVersion;
+static std::string  RslProductName;
+static std::string  RslProductVersion;
 static bool     Inited;
 
 int CorrectPath(char *buff)
@@ -119,12 +119,12 @@ int RsMkDir(const char *dir)
 
 const char *RslGetProductName(void)
 {
-    return RslProductName.toLocal8Bit().data();
+    return RslProductName.c_str();
 }
 
 const char *RslGetProductVersion(void)
 {
-    return RslProductVersion.toLocal8Bit().data();
+    return RslProductVersion.c_str();
 }
 
 static int MyReadProc(char *key, char *val, void *data)

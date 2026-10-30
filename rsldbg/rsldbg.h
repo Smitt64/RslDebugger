@@ -4,13 +4,11 @@
 #define __RSLTYPE_H
 #include "lf/bp_data.h"
 #include "rsldbg_global.h"
+#include "dbgserverproto.h"
 #include "rsl/dbgintf.h"
 #include <loki/SmartPtr.h>
-#include <QObject>
-#include <QStack>
-#include <QEventLoop>
-#include <QThread>
-#include <QMap>
+#include <vector>
+#include <map>
 
 class CDebug;
 typedef Loki::SmartPtr<CDebug, Loki::RefLinked> SpDebugPtrType;
@@ -21,11 +19,7 @@ typedef char *(*tRslGetProcNameFromStack)(Qt::HANDLE);
 typedef Qt::HANDLE(*tRslGetStatementFromStack)(Qt::HANDLE);
 typedef Qt::HANDLE(*tRslModuleForStatement)(Qt::HANDLE);
 typedef void (*tRslGetStatementPos)(Qt::HANDLE, int *offs, int *len);
-//typedef void(*tRslGetStatementPosEx)(Qt::HANDLE, int *offs, int *len, int *line);
 
-class QApplication;
-class QLibrary;
-class CDebug;
 class DbgServer;
 class RSLDBG_EXPORT Rsldbg
 {
@@ -55,23 +49,17 @@ public:
     tRslGetStatementFromStack RslGetStatementFromStack;
     tRslGetStatementPos RslGetStatementPos;
     tRslModuleForStatement RslModuleForStatement;
-    //tRslGetStatementPosEx RslGetStatementPosEx;
 
 private:
     int process(HDBG hDBG, TBpData *data);
-    QApplication *m_pApp;
-    char **argv;
 
     bool is_inited, is_ui;
     Qt::HANDLE m_ActiveBeforeDbg;
-    QVector<SpDebugPtrType> m_Dbg;
-    QMap<CDebug*, DbgServer*> m_Servers;
-
-    QEventLoop m_EventLoop;
+    std::vector<SpDebugPtrType> m_Dbg;
+    std::map<CDebug*, DbgServer*> m_Servers;
 
     CDebug *m_CurDbg;
-    QScopedPointer<QLibrary> m_RsLeng;
-    QScopedPointer<QThread> m_Thread;
+    void *m_RsLeng; // HMODULE rsscript.dll
 };
 
 Qt::HANDLE ActiveBeforeDbg();
@@ -83,6 +71,5 @@ char *RslGetProcNameFromStack(Qt::HANDLE stack);
 Qt::HANDLE RslGetStatementFromStack(Qt::HANDLE stack);
 void RslGetStatementPos(Qt::HANDLE hst, int *offs, int *len);
 Qt::HANDLE RslModuleForStatement(Qt::HANDLE hst);
-//int RslGetModuleLine(Qt::HANDLE module, int offs, int len);
 
 #endif // RSLDBG_H

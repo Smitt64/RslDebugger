@@ -1,5 +1,7 @@
 #include "csurvey.h"
 #include "cdebug.h"
+#include <algorithm>
+#include <functional> // unary_function/bind1st/mem_fun (deprecated, но валидно в C++11)
 
 CSurvey::CSurvey(CDebug *pParent) :
     CWatchV(pParent)
@@ -90,7 +92,7 @@ void CSurvey::UpdateExpandInfo ()
         if (remElems > 0)
             tmpNameStack.erase (tmpNameStack.end () - remElems, tmpNameStack.end());
 
-        tmpNameStack.push_back ((*it)->str_name.toStdString());
+        tmpNameStack.push_back ((*it)->str_name);
 
         if ((*it)->is_expanded)
             ExpandInfo.insert (tmpNameStack);
@@ -145,7 +147,7 @@ void CSurvey::Expand()
             remElems = (*(it-1))->depth - (*it)->depth + 1;
 
         tmpNameStack.erase (tmpNameStack.end () - remElems, tmpNameStack.end ());
-        tmpNameStack.push_back ((*it)->str_name.toStdString());
+        tmpNameStack.push_back ((*it)->str_name);
 
         if (!(*it)->is_expanded && (*it)->is_object && ExpandInfo.find (tmpNameStack) != ExpandInfo.end ())
             it = ExpandElem (it);
@@ -175,19 +177,19 @@ void CSurvey::RefreshValue (SpVarPtrType value)
             isObject = 0;
             if (parseExpired)
             {
-                QByteArray errStr;
+                std::string errStr;
                 GetLastErrorText (m_parent, &errStr, errorStr);
 
-                strcpy (valueStr, errStr.data());
-                strcpy (typeStr,  errorStr.data());
+                strcpy (valueStr, errStr.c_str());
+                strcpy (typeStr,  errorStr.c_str());
             }
             else
             {
-                QByteArray errStr;
+                std::string errStr;
                 GetLastErrorText (m_parent, &errStr, errorStr);
 
-                strcpy (valueStr, errStr.data());
-                strcpy (typeStr,  errorStr.data());
+                strcpy (valueStr, errStr.c_str());
+                strcpy (typeStr,  errorStr.c_str());
             }
         }
     }
@@ -208,7 +210,7 @@ void CSurvey::BuildNameList (iterator it, std::vector<std::string>* dstNameList)
 {
     while (1)
     {
-        dstNameList->insert (dstNameList->begin (), (*it)->str_name.toStdString());
+        dstNameList->insert (dstNameList->begin (), (*it)->str_name);
         int dpth = (*it)->depth;
         if (dpth > 1)
             while ((*(--it))->depth == dpth);

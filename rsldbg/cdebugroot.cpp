@@ -1,12 +1,11 @@
 #include "cdebugroot.h"
-#include <QMessageBox>
-#include <QApplication>
 #include "dbg.h"
 #include "convert.h"
-#include <QTextCodec>
-#include <QDebug>
+#include "strconv.h"
+#include "dbglog.h"
+#include <cstdio>
 
-void GetLastErrorText (CDebugRoot* dbgRoot, QByteArray* str, const QByteArray& def)
+void GetLastErrorText (CDebugRoot* dbgRoot, std::string* str, const std::string& def)
 {
     char buff [ERROR_TEXT_MAX_LENGTH] = {0};
 
@@ -16,14 +15,12 @@ void GetLastErrorText (CDebugRoot* dbgRoot, QByteArray* str, const QByteArray& d
         *str = def;
 }
 
-CDebugRoot::CDebugRoot(QObject *parent)
-    : QObject{parent},
-    m_dbgftable(nullptr),
+CDebugRoot::CDebugRoot()
+    : m_dbgftable(nullptr),
     m_dbgintfMajorVer(0),
     m_mode(TRUE),
     childsLimit(0)
 {
-    oem866 = QTextCodec::codecForName("IBM 866");
 }
 
 CDebugRoot::~CDebugRoot()
@@ -31,12 +28,13 @@ CDebugRoot::~CDebugRoot()
 
 }
 
-QString CDebugRoot::toUnicode(const char *str)
+// OEM (cp866) -> UTF-8
+std::string CDebugRoot::toUnicode(const char *str)
 {
     if (NeedConvert())
-        return oem866->toUnicode(str);
+        return dbgstr::oem_to_utf8(str);
 
-    return QString::fromLocal8Bit(str);
+    return std::string(str);
 }
 
 void CDebugRoot::SetChildsLimit (DWORD childsLimit_)
@@ -60,8 +58,9 @@ bool CDebugRoot::CheckVersion (int needVersion, bool showDlg)
     {
         if (showDlg)
         {
-            QString str = QString("Requaed function needs RSL DBG interface version %1").arg(needVersion);
-            QMessageBox::critical(QApplication::activeWindow(), "Error", str);
+            char buff[128];
+            std::snprintf(buff, sizeof(buff), "Requaed function needs RSL DBG interface version %d", needVersion);
+            MessageBoxA(NULL, buff, "Error", MB_ICONERROR | MB_OK);
         }
         return false;
     }
@@ -346,7 +345,7 @@ bool CDebugRoot::do_DoneInfo(RSLVINFO hinfo)
 
     try
     {
-        qDebug() << "do_DoneInfo" << count++;
+        DBG_LOGI("do_DoneInfo %d", count++);
         curChilds.erase (hinfo);
         m_dbgftable->DoneInfo(m_inst, hinfo);
     }

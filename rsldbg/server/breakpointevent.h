@@ -1,19 +1,20 @@
 #ifndef BREAKPOINTEVENT_H
 #define BREAKPOINTEVENT_H
 
-#include <QEvent>
-#include "lf/bp_data.h"
+#include "serverevent.h"
+#include "../dbgserverproto.h"
+#include "../lf/bp_data.h"
 
 // Событие владеет копией TBpData: оригинал хранится в CDebug::m_bpdata и может
 // быть удалён (DelBp при BP_INVISIBLE) раньше, чем серверный поток обработает
 // это событие из очереди. Чтение сырого указателя было use-after-free.
-class BreakPointEvent : public QEvent
+class BreakPointEvent : public DbgServerEvent
 {
 public:
-    BreakPointEvent(const TBpData *data);
-    ~BreakPointEvent();
+    explicit BreakPointEvent(const TBpData *data);
+    virtual ~BreakPointEvent();
 
-    Qt::HANDLE data();
+    TBpData *data();
 
 private:
     TBpData *pData;

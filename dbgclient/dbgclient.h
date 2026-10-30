@@ -37,7 +37,9 @@ public:
     void setAuthToken(const QString &token) { m_AuthToken = token; }
 
     // Запросы к серверу
-    void execContinue(int traceLog);
+    // skipSameLine/maxSteps > 0: сервер повторяет команду, пока не
+    // сменится (модуль, строка) - пакетный шаг для MCP-агента.
+    void execContinue(int traceLog, bool skipSameLine = false, int maxSteps = 0);
     void expandVariable(int index, qint64 stack, int stackIndex);
     void showVarValue(qint64 val, qint64 info);
 

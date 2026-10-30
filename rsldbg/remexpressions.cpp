@@ -56,7 +56,7 @@ void RemExpressions::Restore()
             RSLSTACK hStack = 0;
             for (CStackInfo::iterator stit = stacki->begin (); stit != stacki->end (); ++stit)
             {
-                if (it->contextStr == (*stit)->procname.toStdString())
+                if (it->contextStr == (*stit)->procname)
                 {
                     hProc = (*stit)->proc;
                     hStack = (*stit)->st;

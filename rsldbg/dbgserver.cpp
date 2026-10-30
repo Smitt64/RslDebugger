@@ -6,76 +6,70 @@
 #include "server/breakpointevent.h"
 #include "server/serveractionevent.h"
 #include "server/updatedbginfoevent.h"
-#include <QThread>
-#include <QProcess>
-#include <QNetworkInterface>
-#include <QHostInfo>
-#include <QApplication>
 #include "cdebug.h"
-#include <QEvent>
-#include <QFile>
-#include <QFileInfo>
-#include <QDir>
-#include <QDataStream>
-#include <QTextCodec>
-#include <QBuffer>
-#include <QJsonArray>
-#include <QJsonObject>
-#include <QJsonDocument>
 #include "rsldbg.h"
 #include "dbgsettings.h"
+#include "dbglog.h"
+#include "strconv.h"
+#include "vendor/json.hpp"
 
-QString toolProcessStateText(qint16 State);
-QString toolProcessExitStatusText(qint16 State);
-QString toolGetProcessErrorText(const QProcess::ProcessError &error);
+#include <vector>
+#include <cstdio>
+#include <cstdlib> // atoll
+
+using nlohmann::json;
 
 // Locate rsldbgclnt.exe: next to rsldbg.dll (the client is deployed next to
 // the debugger dll), with fallbacks to the host exe dir and plain PATH lookup.
-static QString toolFindDebugClient()
+static std::string toolFindDebugClient()
 {
-    QStringList candidates;
+    std::vector<std::string> candidates;
 
-    HMODULE hd = GetModuleHandleW(L"rsldbg.dll");
-    if (hd)
+    const std::string dllDir = dbgDllDir();
+    if (!dllDir.empty())
+        candidates.push_back(dllDir + "\\rsldbgclnt.exe");
+
+    wchar_t exePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(NULL, exePath, MAX_PATH))
     {
-        wchar_t path[MAX_PATH] = {};
-        if (GetModuleFileNameW(hd, path, MAX_PATH))
-            candidates << QFileInfo(QString::fromWCharArray(path)).absolutePath() + "/rsldbgclnt.exe";
+        std::string exeDir = dbgstr::wide_to_utf8(exePath);
+        const std::string::size_type pos = exeDir.find_last_of("\\/");
+        if (pos != std::string::npos)
+            exeDir.resize(pos);
+
+        candidates.push_back(exeDir + "\\rsldbgclnt.exe");
+        candidates.push_back(exeDir + "\\..\\bin\\rsldbgclnt.exe");
+        candidates.push_back(exeDir + "\\..\\..\\bin\\rsldbgclnt.exe");
     }
 
-    candidates << QCoreApplication::applicationDirPath() + "/rsldbgclnt.exe";
-    candidates << QCoreApplication::applicationDirPath() + "/../bin/rsldbgclnt.exe";
-    candidates << QCoreApplication::applicationDirPath() + "/../../bin/rsldbgclnt.exe";
-
-    for (const QString &candidate : candidates)
+    for (const std::string &candidate : candidates)
     {
-        QString clean = QDir::cleanPath(candidate);
-        if (QFileInfo::exists(clean))
-            return clean;
+        const std::wstring w = dbgstr::utf8_to_wide(candidate);
+        if (GetFileAttributesW(w.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return candidate;
     }
 
-    return QStringLiteral("rsldbgclnt.exe");
+    return std::string("rsldbgclnt.exe");
 }
 
-DbgServer::DbgServer(QObject *parent)
-    : DbgServerBase{parent}
+DbgServer::DbgServer()
+    : DbgServerBase()
 {
     prevStack = 0;
     newDbg = true;
+    m_curdbg = nullptr;
     m_curModuleInView = nullptr;
-
-    // DirectConnection: выставляем флаг прямо в рабочем потоке сервера,
-    // Rsldbg::process() опрашивает его без участия сигналов.
-    QObject::connect(this, &DbgServer::execContinue, this, [this]
-    {
-        m_continueFlag.storeRelease(1);
-    }, Qt::DirectConnection);
+    m_ProcHandle = nullptr;
+    m_SkipCmd = 0;
+    m_SkipLeft = 0;
+    m_SkipMod = nullptr;
+    m_SkipLine = -1;
+    m_SkipSwallowBp = false;
 }
 
 DbgServer::~DbgServer()
 {
-    //closesocket(ClientSocket);
-    qDebug() << "~DbgServer()";
+    DBG_LOGI("~DbgServer()");
 }
 
 void DbgServer::setIsNewDebug(const bool &v)
@@ -83,23 +77,25 @@ void DbgServer::setIsNewDebug(const bool &v)
     newDbg = v;
 }
 
-QString DbgServer::ReadTextFileContent(const QString &filename, const QString &encode)
+std::string DbgServer::ReadTextFileContent(const std::string &filename, const std::string &encode)
 {
-    QString content;
-    QFile f(filename);
-    if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+    std::string content;
+
+    FILE *f = _wfopen(dbgstr::utf8_to_wide(filename).c_str(), L"rb");
+    if (f)
     {
-        if (encode.isEmpty())
-            content = f.readAll();
+        char buf[8192];
+        size_t n;
+        std::string raw;
+        while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+            raw.append(buf, n);
+        fclose(f);
+
+        // Текст модуля в IBM 866; пустой encode - файл уже UTF-8.
+        if (encode.empty())
+            content = raw;
         else
-        {
-            QTextStream stream(&f);
-            stream.setCodec(encode.toLocal8Bit().data());
-
-            content = stream.readAll();
-        }
-
-        f.close();
+            content = dbgstr::oem_to_utf8(raw);
     }
     return content;
 }
@@ -111,88 +107,70 @@ bool DbgServer::startApp()
     if (dbgSettings().clientMode != DbgClientGui)
         return true;
 
-    QNetworkAddressEntry adress;
-    foreach(const QNetworkInterface &qNetInterface, QNetworkInterface::allInterfaces())
-    {
-        foreach(const QNetworkAddressEntry &qNetInterfaceAddress, qNetInterface.addressEntries())
-        {
-            if (qNetInterfaceAddress.ip().protocol() == QAbstractSocket::IPv4Protocol
-                && qNetInterfaceAddress.ip() != QHostAddress(QHostAddress::LocalHost)
-                && qNetInterfaceAddress.netmask().toString() != "")
-            {
-                adress = qNetInterfaceAddress;
-                break;
-                //qDebug() << qNetInterfaceAddress.ip().toString();
-                //qDebug() << qNetInterfaceAddress.netmask().toString();
-            }
-        }
-    }
-
-    QString program = toolFindDebugClient();
-    qCInfo(dbgServer()) << QString("Starting debug client: %1").arg(program);
+    const std::string program = toolFindDebugClient();
+    DBG_LOGI("Starting debug client: %s", program.c_str());
 
     if (port() <= 0)
     {
-        qCCritical(dbgServer()) << "Invalid server port (0), refusing to start client";
+        DBG_LOGE("Invalid server port (0), refusing to start client");
         return false;
     }
 
-    m_pProc.reset(new QProcess());
-    m_pProc->setProgram(program);
-    m_pProc->setArguments(
+    // CreateProcessW требует изменяемую командную строку.
+    std::wstring cmd = L"\"" + dbgstr::utf8_to_wide(program) + L"\" --host 127.0.0.1 --port "
+                       + std::to_wstring(port());
+
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+
+    if (!CreateProcessW(NULL, &cmd[0], NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
     {
-        "--host", "127.0.0.1",//adress.ip().toString(),
-        "--port", QString::number(port())
-    });
+        DBG_LOGE("CreateProcessW failed, error %lu", GetLastError());
+        return false;
+    }
 
-    bool hr = true;
-    QObject::connect(m_pProc.data(), &QProcess::stateChanged, [](QProcess::ProcessState newState)
-                     {
-                        qCInfo(dbgServer()) << QString("Process state changed to: %1 (%2)")
-                        .arg(newState).arg(toolProcessStateText(newState));
-                     });
-    QObject::connect(m_pProc.data(), &QProcess::errorOccurred, [&hr](QProcess::ProcessError error)
-                     {
-                        qCInfo(dbgServer()) << QString("Process error occurred: %1 (%2)")
-                        .arg(error).arg(toolGetProcessErrorText(error));
+    CloseHandle(pi.hThread);
+    m_ProcHandle = pi.hProcess;
 
-                        hr = false;
-                     });
+    // Процесс может упасть сразу после старта: ждём чуть-чуть и проверяем.
+    if (WaitForSingleObject(pi.hProcess, 2000) == WAIT_OBJECT_0)
+    {
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        DBG_LOGE("Debug client exited immediately, code %lu", code);
+        CloseHandle(pi.hProcess);
+        m_ProcHandle = nullptr;
+        return false;
+    }
 
-    m_pProc->start();
-    m_pProc->waitForStarted();
-
-    if (m_pProc->state() == QProcess::NotRunning)
-        hr = false;
-
-    //qDebug() << m_pProc->state() << m_pProc->exitStatus() << m_pProc->exitCode() << m_pProc->error();
-
-    return hr;
+    return true;
 }
 
 void DbgServer::sendEventBreakPoint(Qt::HANDLE BpData)
 {
     TBpData *data = (TBpData*)BpData;
 
-    QJsonObject root;
-    root["event"] = QStringLiteral("breakpoint");
+    json root;
+    root["event"] = "breakpoint";
     root["set"] = (data != nullptr);
 
     if (data)
     {
-        QJsonObject bp;
+        json bp;
         bp["type"] = (int)data->bp_type;
         bp["offs"] = data->offs;
         bp["len"] = data->len;
         bp["line"] = data->line;
-        bp["key"] = QString::number((qint64)data->key);
-        bp["modname"] = data->modname;
-        bp["mod"] = QString::number(reinterpret_cast<qint64>(data->mod));
-        bp["stmt"] = QString::number(reinterpret_cast<qint64>(data->stmt));
+        bp["key"] = std::to_string((long long)data->key);
+        // modname - сырые байты рантайма (ANSI), отдаём в UTF-8.
+        bp["modname"] = dbgstr::ansi_to_utf8(data->modname);
+        bp["mod"] = std::to_string(reinterpret_cast<uintptr_t>(data->mod));
+        bp["stmt"] = std::to_string(reinterpret_cast<uintptr_t>(data->stmt));
         root["bp"] = bp;
     }
 
-    write(DBG_REQUEST_EVENT_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
+    write(DBG_REQUEST_EVENT_JSON, root.dump());
 }
 
 void DbgServer::UpdateDbgInfo(TBpData *data)
@@ -217,6 +195,37 @@ void DbgServer::UpdateDbgInfo(TBpData *data)
     }
 
     m_curdbg->SetIndex(0);
+
+    // Пакетный шаг (skip_same_line): если позиция не сменилась, клиенту
+    // ничего не шлём - сразу продолжаем выполнение той же командой.
+    // Но срабатывание настоящего брейкпоинта (data != nullptr) режим
+    // прерывает - его нельзя проглатывать.
+    if (m_SkipCmd && data)
+        m_SkipCmd = 0; // останов по брейкпоинту - режим прерываем
+
+    if (m_SkipCmd)
+    {
+        RSLMODULE mod = m_curdbg->GetCurModule(0);
+        int offs2 = 0, len2 = 0;
+        m_curdbg->GetCurStatement(&offs2, &len2, 0);
+        const int line = m_curdbg->GetStatementLine(offs2, len2, mod);
+
+        if (m_SkipLeft > 0 && mod == (RSLMODULE)m_SkipMod && line == m_SkipLine)
+        {
+            m_SkipLeft--;
+            m_SkipSwallowBp = true; // проглотить идущий следом BreakPointEvent
+            m_curdbg->SetDebugState(false);
+            m_curdbg->do_ExecContinue(m_SkipCmd);
+            m_continueFlag.store(1);
+            return;
+        }
+
+        // Позиция сменилась или лимит исчерпан - останавливаемся и
+        // отдаём состояние клиенту обычным образом.
+        DBG_LOGI("skip_same_line: stop (line %d, auto steps left %d)", line, m_SkipLeft);
+        m_SkipCmd = 0;
+    }
+
     UpdateDbgInfo(0);
 }
 
@@ -229,12 +238,13 @@ void DbgServer::UpdateVariables(const int &index)
     CLocals::iterator i;
     for (i = pLocals->begin (); i != pLocals->end (); ++i)
     {
-        QString name = (*i)->str_name;
-        QString value = (*i)->str_value;
-        QByteArray type = (*i)->str_type;
+        const std::string &name = (*i)->str_name;
+        const std::string &value = (*i)->str_value;
+        const std::string &type = (*i)->str_type;
 
-        if (name == "THIS" && value.contains("Object") && !m_ProcNamespace.contains(st))
-            m_ProcNamespace.insert(st, new QByteArray(type));
+        if (name == "THIS" && value.find("Object") != std::string::npos &&
+            m_ProcNamespace.find(st) == m_ProcNamespace.end())
+            m_ProcNamespace[st] = type;
     }
 
     ShowVariables(index);
@@ -244,47 +254,46 @@ void DbgServer::ShowVariables(const int &index)
 {
     // Имена/значения приходят из рантайма в ANSI; исторически клиент
     // декодировал их как Windows-1251 - сохраняем то же отображение.
-    QTextCodec *codec = QTextCodec::codecForName("Windows-1251");
-
     RSLSTACK st = m_curdbg->GetStackAt(index);
     CLocals* pLocals = m_curdbg->GetLocals();
 
-    QJsonArray vars;
+    json vars = json::array();
 
     CLocals::iterator i;
+    int idx = 0;
 
-    for (i = pLocals->begin (); i != pLocals->end (); ++i)
+    for (i = pLocals->begin (); i != pLocals->end (); ++i, ++idx)
     {
-        QJsonObject obj;
-        obj["index"] = (int)std::distance(pLocals->begin(), i);
-        obj["name"] = codec->toUnicode((*i)->str_name);
-        obj["type"] = codec->toUnicode((*i)->str_type);
-        obj["proc"] = codec->toUnicode((*i)->str_proc);
+        json obj;
+        obj["index"] = idx;
+        obj["name"] = dbgstr::ansi_to_utf8((*i)->str_name);
+        obj["type"] = dbgstr::ansi_to_utf8((*i)->str_type);
+        obj["proc"] = dbgstr::ansi_to_utf8((*i)->str_proc);
         obj["depth"] = (int)(*i)->depth;
-        obj["object"] = (*i)->is_object;
-        obj["expanded"] = (*i)->is_expanded;
-        obj["lvalue"] = (*i)->is_lvalue;
-        obj["fakeChildren"] = (*i)->isFakeChildrensItem;
+        obj["object"] = (bool)(*i)->is_object;
+        obj["expanded"] = (bool)(*i)->is_expanded;
+        obj["lvalue"] = (bool)(*i)->is_lvalue;
+        obj["fakeChildren"] = (bool)(*i)->isFakeChildrensItem;
 
-        // 64-битные хендлы строками: QJsonValue хранит числа как double,
-        // а double точно представляет целые только до 2^53.
-        obj["val"] = QString::number(reinterpret_cast<qint64>((*i)->val));
-        obj["exp"] = QString::number(reinterpret_cast<qint64>((*i)->exp));
-        obj["st"] = QString::number(reinterpret_cast<qint64>((*i)->st));
-        obj["procHandle"] = QString::number(reinterpret_cast<qint64>((*i)->proc));
-        obj["info"] = QString::number(reinterpret_cast<qint64>((*i)->info));
-        obj["mod"] = QString::number(reinterpret_cast<qint64>((*i)->mod));
+        // 64-битные хендлы строками: JSON-числа в клиентах хранятся как
+        // double, а double точно представляет целые только до 2^53.
+        obj["val"] = std::to_string(reinterpret_cast<uintptr_t>((*i)->val));
+        obj["exp"] = std::to_string(reinterpret_cast<uintptr_t>((*i)->exp));
+        obj["st"] = std::to_string(reinterpret_cast<uintptr_t>((*i)->st));
+        obj["procHandle"] = std::to_string(reinterpret_cast<uintptr_t>((*i)->proc));
+        obj["info"] = std::to_string(reinterpret_cast<uintptr_t>((*i)->info));
+        obj["mod"] = std::to_string(reinterpret_cast<uintptr_t>((*i)->mod));
 
-        if (!(*i)->str_value.isEmpty())
-            obj["value"] = codec->toUnicode((*i)->str_value);
+        if (!(*i)->str_value.empty())
+            obj["value"] = dbgstr::ansi_to_utf8((*i)->str_value);
 
-        vars.append(obj);
+        vars.push_back(obj);
     }
 
-    QJsonObject root;
+    json root;
     root["vars"] = vars;
 
-    write(DBG_REQUEST_UPDATELOCALS_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
+    write(DBG_REQUEST_UPDATELOCALS_JSON, root.dump());
 }
 
 void DbgServer::UpdateDbgInfo(const int &index)
@@ -309,10 +318,7 @@ void DbgServer::UpdateStack()
 {
     // Клиент исторически декодировал имя файла/функции как IBM 866,
     // а namespace как Windows-1251 - сохраняем то же отображение.
-    QTextCodec *oem866 = QTextCodec::codecForName("IBM 866");
-    QTextCodec *cp1251 = QTextCodec::codecForName("Windows-1251");
-
-    QJsonArray frames;
+    json frames = json::array();
     int rv = m_curdbg->GetStackCount();
     for (int i = 0; i < rv; i++)
     {
@@ -324,69 +330,71 @@ void DbgServer::UpdateStack()
         int isBtrStream = 0;
         RslGetStatementPos(hst, &offs, &len);
 
-        QJsonObject frame;
+        json frame;
         frame["offs"] = offs;
         frame["len"] = len;
         frame["line"] = RslGetModuleLine(module, offs, len);
-        frame["module"] = QString::number(reinterpret_cast<qint64>(module));
-        frame["file"] = oem866->toUnicode(RslGetModuleFile(module, &isBtrStream));
-        frame["func"] = oem866->toUnicode(RslGetProcNameFromStack(stack));
+        frame["module"] = std::to_string(reinterpret_cast<uintptr_t>(module));
+        frame["file"] = dbgstr::oem_to_utf8(RslGetModuleFile(module, &isBtrStream));
+        frame["func"] = dbgstr::oem_to_utf8(RslGetProcNameFromStack(stack));
 
-        if (m_ProcNamespace.contains(stack))
-            frame["namespace"] = cp1251->toUnicode(m_ProcNamespace[stack]->data());
+        std::map<void*, std::string>::const_iterator ns = m_ProcNamespace.find(stack);
+        if (ns != m_ProcNamespace.end())
+            frame["namespace"] = dbgstr::ansi_to_utf8(ns->second);
 
-        frames.append(frame);
+        frames.push_back(frame);
     }
 
-    QJsonObject root;
+    json root;
     root["frames"] = frames;
 
-    write(DBG_REQUEST_UPDATESTACK_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
+    write(DBG_REQUEST_UPDATESTACK_JSON, root.dump());
 }
 
 void DbgServer::UpdateText(const int &index)
 {
     // Текст модуля читается из файла в IBM 866, имя файла - тоже OEM,
-    // поэтому оба декодируем этим кодеком (клиент больше не трогает кодировки).
-    QTextCodec *oem866 = QTextCodec::codecForName("IBM 866");
-
+    // поэтому оба декодируем этой кодировкой (клиент кодировки не трогает).
     RSLMODULE mod = m_curdbg->GetCurModule(index);
 
     int offs = 0;
     int len = 0;
 
     RSLSTMT statement = m_curdbg->GetCurStatement(&offs, &len, index);
+    (void)statement;
     int line = m_curdbg->GetStatementLine(offs, len, mod);
 
     // NB: UPDATETEXT отправляется на КАЖДОМ шаге - клиент по нему обновляет
-    // позицию курсора. Не "оптимизировать" условием m_curModuleInView != mod:
-    // иначе при шагах внутри одного модуля клиент не узнает о смене строки.
-    QJsonObject root;
+    // позицию курсора. Но поле "text" (полный исходник) шлём только при смене
+    // модуля: файл .mac во время отладки не меняется, клиент держит свой кэш.
+    json root;
     root["offs"] = offs;
     root["len"] = len;
     root["line"] = line;
-    root["curModuleInView"] = QString::number(reinterpret_cast<qint64>(mod));
+    root["curModuleInView"] = std::to_string(reinterpret_cast<uintptr_t>(mod));
 
     int isBtrStream = 0;
     char *filename = RslGetModuleFile((Qt::HANDLE)mod, &isBtrStream);
 
-    const QString fileNameStr = oem866->toUnicode(filename);
-    if (m_TextCacheFile != fileNameStr)
+    const std::string fileNameStr = dbgstr::oem_to_utf8(filename ? filename : "");
+    const bool textChanged = (m_TextCacheFile != fileNameStr);
+    if (textChanged)
     {
         m_TextCacheFile = fileNameStr;
-        m_TextCacheContent = ReadTextFileContent(filename, "IBM 866");
+        m_TextCacheContent = ReadTextFileContent(fileNameStr, "IBM 866");
     }
 
     root["filename"] = fileNameStr;
-    if (!m_TextCacheContent.isEmpty())
+    root["textChanged"] = textChanged;
+    if (textChanged && !m_TextCacheContent.empty())
         root["text"] = m_TextCacheContent;
 
-    write(DBG_REQUEST_UPDATETEXT_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
+    write(DBG_REQUEST_UPDATETEXT_JSON, root.dump());
 
     m_curModuleInView = mod;
 
     // Брейкпоинты текущего модуля
-    QJsonArray bps;
+    json bps = json::array();
 
     int nBP = m_curdbg->GetBPCount();
     for (int i = 0; i < nBP; ++i)
@@ -394,32 +402,31 @@ void DbgServer::UpdateText(const int &index)
         TBpData *bp = m_curdbg->GetBP(i);
         if (mod == bp->mod)
         {
-            QJsonObject item;
+            json item;
             item["type"] = (int)bp->bp_type;
             item["offs"] = bp->offs;
             item["len"] = bp->len;
             item["line"] = bp->line;
-            item["key"] = QString::number((qint64)bp->key);
-            item["modname"] = bp->modname;
-            item["mod"] = QString::number(reinterpret_cast<qint64>(bp->mod));
-            item["stmt"] = QString::number(reinterpret_cast<qint64>(bp->stmt));
-            bps.append(item);
+            item["key"] = std::to_string((long long)bp->key);
+            item["modname"] = dbgstr::ansi_to_utf8(bp->modname);
+            item["mod"] = std::to_string(reinterpret_cast<uintptr_t>(bp->mod));
+            item["stmt"] = std::to_string(reinterpret_cast<uintptr_t>(bp->stmt));
+            bps.push_back(item);
         }
     }
 
-    if (!bps.isEmpty())
+    if (!bps.empty())
     {
-        QJsonObject bproot;
+        json bproot;
         bproot["bps"] = bps;
-        write(DBG_REQUEST_UPDATEBP_JSON, QJsonDocument(bproot).toJson(QJsonDocument::Compact));
+        write(DBG_REQUEST_UPDATEBP_JSON, bproot.dump());
     }
 }
 
-void DbgServer::ShowVariableValue(const qint64 &val, const qint64 &info)
+void DbgServer::ShowVariableValue(const long long &val, const long long &info)
 {
+    (void)val;
     // Имя/тип/значение исторически декодировались клиентом как Windows-1251.
-    QTextCodec *codec = QTextCodec::codecForName("Windows-1251");
-
     int size = 0;
     char str_name[MAX_NAME] = {0};
     char str_type[MAX_TYPENAME] = {0};
@@ -427,13 +434,13 @@ void DbgServer::ShowVariableValue(const qint64 &val, const qint64 &info)
     RSLVALUE v  = NULL;
     m_curdbg->do_GetValueSize(reinterpret_cast<RSLVINFO>(info), &size);
 
-    QByteArray value;
+    std::string value;
     if (size)
     {
         char *buf = new char[size + 1];
         memset(buf, 0, size + 1);
         m_curdbg->do_GetValueData(reinterpret_cast<RSLVINFO>(info), buf, size + 1, 0, &size);
-        value = QByteArray(buf, size);
+        value.assign(buf, size);
         delete[] buf;
     }
 
@@ -444,13 +451,13 @@ void DbgServer::ShowVariableValue(const qint64 &val, const qint64 &info)
     // Отвечаем всегда, иначе клиент ждёт кадр до таймаута: для объектов
     // do_GetValueSize возвращает 0 и сырых данных нет, но строковое
     // представление (str_value) RefreshInfo всё равно даёт.
-    QJsonObject root;
-    root["name"] = codec->toUnicode(str_name);
-    root["type"] = codec->toUnicode(str_type);
-    root["value"] = size ? codec->toUnicode(value)
-                         : codec->toUnicode(str_value);
+    json root;
+    root["name"] = dbgstr::ansi_to_utf8(str_name);
+    root["type"] = dbgstr::ansi_to_utf8(str_type);
+    root["value"] = size ? dbgstr::ansi_to_utf8(value)
+                         : dbgstr::ansi_to_utf8(str_value);
 
-    write(DBG_REQUEST_GETVALUENFO_JSON, QJsonDocument(root).toJson(QJsonDocument::Compact));
+    write(DBG_REQUEST_GETVALUENFO_JSON, root.dump());
 }
 
 int DbgServer::RslGetModuleLine(Qt::HANDLE module, int offs, int len)
@@ -458,7 +465,6 @@ int DbgServer::RslGetModuleLine(Qt::HANDLE module, int offs, int len)
     int      line = -1;
     int      realoffs, reallen;
     RSLSTMT  stmt;
-    //RslGetStatementPos(hst, offs, len);
     m_curdbg->do_GetStatementOfPos((RSLMODULE)module, offs, len, &realoffs, &reallen, &stmt, &line);
 
     return line;
@@ -471,28 +477,55 @@ bool DbgServer::serverActionEvent(ServerActionEvent *e)
     if (!m_curdbg)
         return false;
 
-    QByteArray &data = e->buffer();
+    const std::string &data = e->buffer();
     if (e->action() == DBG_REQUEST_EXECCONTNUE_JSON)
     {
-        QJsonObject obj = QJsonDocument::fromJson(data).object();
+        const json obj = json::parse(data, nullptr, false);
+        const int cmd = obj.is_object() ? obj.value("traceLog", 0) : 0;
+
+        // Пакетный шаг: "skip_same_line" (только step_over/step_into) -
+        // сервер сам повторяет команду, пока не сменится (модуль, строка)
+        // текущей точки, не более "max_steps" раз (защита от зацикливания).
+        m_SkipCmd = 0;
+        if ((cmd == EXECCONTNUE_STEP_OVER || cmd == EXECCONTNUE_STEP_INTO) &&
+            obj.is_object() && obj.value("skip_same_line", false))
+        {
+            int maxSteps = obj.value("max_steps", 500);
+            if (maxSteps < 1)
+                maxSteps = 1;
+            if (maxSteps > 100000)
+                maxSteps = 100000;
+
+            RSLMODULE mod = m_curdbg->GetCurModule(0);
+            int offs = 0, len = 0;
+            m_curdbg->GetCurStatement(&offs, &len, 0);
+
+            m_SkipCmd = cmd;
+            m_SkipLeft = maxSteps;
+            m_SkipMod = (void*)mod;
+            m_SkipLine = m_curdbg->GetStatementLine(offs, len, mod);
+            DBG_LOGI("skip_same_line: start (cmd %d, line %d, max %d)", cmd, m_SkipLine, maxSteps);
+        }
+
         m_curdbg->SetDebugState(false);
-        m_curdbg->do_ExecContinue(obj.value("traceLog").toInt());
-        emit execContinue();
+        m_curdbg->do_ExecContinue(cmd);
+        m_continueFlag.store(1);
     }
     else if (e->action() == DBG_REQUEST_EXPANDVARIABLE_JSON)
     {
-        QJsonObject obj = QJsonDocument::fromJson(data).object();
+        const json obj = json::parse(data, nullptr, false);
 
         CLocals* pLocals = m_curdbg->GetLocals();
-        pLocals->ExpandV(obj.value("index").toInt());
+        pLocals->ExpandV(obj.is_object() ? obj.value("index", 0) : 0);
         ShowVariables(0);
     }
     else if (e->action() == DBG_REQUEST_GETVALUENFO_JSON)
     {
-        QJsonObject obj = QJsonDocument::fromJson(data).object();
+        const json obj = json::parse(data, nullptr, false);
+        const long long v = obj.is_object() ? atoll(obj.value("val", "0").c_str()) : 0;
+        const long long inf = obj.is_object() ? atoll(obj.value("info", "0").c_str()) : 0;
 
-        ShowVariableValue(obj.value("val").toString().toLongLong(),
-                          obj.value("info").toString().toLongLong());
+        ShowVariableValue(v, inf);
     }
 
     return DbgServerBase::serverActionEvent(e);
@@ -505,23 +538,29 @@ void DbgServer::clientDisconnected()
     // Режим abort - то же, что клиент шлёт из DbgClient::stop().
     if (m_curdbg && m_curdbg->GetDebugState())
     {
-        qInfo(dbgServer()) << "Client disconnected while paused, aborting execution";
+        DBG_LOGW("Client disconnected while paused, aborting execution");
         m_curdbg->SetDebugState(false);
         m_curdbg->do_ExecContinue(EXECCONTNUE_DBG_ABORT);
     }
 }
 
-bool DbgServer::serverEvent(QEvent *event)
+bool DbgServer::serverEvent(DbgServerEvent *event)
 {
     if (event->type() == MSG_UPDATEDBGINFO_EVENT)
     {
-        UpdateDbgInfoEvent *e = dynamic_cast<UpdateDbgInfoEvent*>(event);
+        UpdateDbgInfoEvent *e = static_cast<UpdateDbgInfoEvent*>(event);
         UpdateDbgInfo((TBpData*)e->data());
     }
     else if (event->type() == MSG_BREAKPOINT)
     {
-        BreakPointEvent *e = dynamic_cast<BreakPointEvent*>(event);
-        sendEventBreakPoint(e->data());
+        // Событие от авто-шага skip_same_line - клиенту не отправляем.
+        if (m_SkipSwallowBp)
+            m_SkipSwallowBp = false;
+        else
+        {
+            BreakPointEvent *e = static_cast<BreakPointEvent*>(event);
+            sendEventBreakPoint(e->data());
+        }
     }
 
     return DbgServerBase::serverEvent(event);

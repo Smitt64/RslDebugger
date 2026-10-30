@@ -2,20 +2,21 @@
 #define CDEBUGROOT_H
 
 #include <Windows.h>
-#include <QObject>
+#include <string>
+#include <map>
 #define _INC_WINDOWS
 #include "rsl/dbgintf.h"
 
 const unsigned ERROR_TEXT_MAX_LENGTH = 4096 * 10;
 
-class CDebugRoot : public QObject
+class CDebugRoot
 {
-    Q_OBJECT
 public:
-    CDebugRoot(QObject *parent = nullptr);
+    CDebugRoot();
     virtual ~CDebugRoot();
 
-    QString toUnicode(const char *str);
+    // OEM (cp866) -> UTF-8
+    std::string toUnicode(const char *str);
 
     void SetChildsLimit (DWORD childsLimit_);
     void SetExternalMode(int mode);
@@ -60,16 +61,15 @@ public:
 protected:
     TDbgIntf*	m_dbgftable;
     int         m_dbgintfMajorVer;
-    QString		m_error;
+    std::string m_error;
     HRD			m_inst;
 
 private:
-    QTextCodec *oem866;
     int m_mode;
     DWORD childsLimit;
     std::map<RSLVINFO, unsigned> curChilds;
 };
 
-void GetLastErrorText (CDebugRoot* dbgRoot, QByteArray* str, const QByteArray& def);
+void GetLastErrorText (CDebugRoot* dbgRoot, std::string* str, const std::string& def);
 
 #endif // CDEBUGROOT_H
